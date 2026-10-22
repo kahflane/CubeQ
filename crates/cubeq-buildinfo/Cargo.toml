@@ -1,0 +1,11 @@
+[package]
+name = "cubeq-buildinfo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Compile-time build provenance for CubeQ binaries."
+repository.workspace = true
+publish = true
+
+[dependencies]
