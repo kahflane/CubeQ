@@ -1164,7 +1164,7 @@ cli-hardware-supported-platforms = Supported platforms: Linux, macOS, Windows.
 # ── self-test (cubeq self-test) ──
 cli-selftest-all-passed = All {$total} checks passed.
 cli-selftest-some-failed = {$failed}/{$total} checks failed.
-cli-selftest-channel-config-uncompiled = {$compiled} compiled channel types, {$configured} compiled/configured; configured but not compiled: {$names}. Build from source with `./install.sh --source --preset full`, `--features channels-full`, or the specific `channel-*` feature.
+cli-selftest-channel-config-uncompiled = {$compiled} compiled channel types, {$configured} compiled/configured; configured but not compiled: {$names}. Build from source with `cargo install --path . --features channels-full`, or the specific `channel-*` feature.
 
 # ── channels (cubeq channel list) ──
 cli-channels-header = Channels:
@@ -1172,7 +1172,7 @@ cli-channels-cli-always = {"  "}✅ CLI (always available)
 cli-channels-notion = {"  "}{$status} Notion
 cli-channels-not-compiled-header = {"  "}Configured but not compiled in this binary:
 cli-channels-not-compiled-entry = {"  "}🚫 {$name} (configured, not compiled)
-cli-channels-build-hint = {"  "}Build from source with `./install.sh --source --preset full`, `--features channels-full`, or the specific `channel-*` feature.
+cli-channels-build-hint = {"  "}Build from source with `cargo install --path . --features channels-full`, or the specific `channel-*` feature.
 cli-channels-start-hint = To start channels: cubeq channel start
 cli-channels-doctor-hint = To check health:    cubeq channel doctor
 cli-channels-configure-hint = To configure:      cubeq config set channels.<name>.<field>=<value>
@@ -1598,3 +1598,14 @@ rpc-config-set-many-limit = config/set-many accepts at most { $limit } entries i
 rpc-config-set-many-entry-rejected = config/set-many entry { $index } (`{ $prop }`) rejected; nothing was saved: { $reason }
 
 skill-http-request-timeout = HTTP request timed out
+
+# ── update ──
+cli-update-about = Check for and apply CubeQ updates
+cli-update-long-about =
+    Check for and apply CubeQ updates.
+cli-update-already-current = Already up to date (v{$version}).
+cli-update-success = Successfully updated to v{$version}!
+cli-update-prebuilt-channel-note = Pre-built updates use the lean standard distribution. Build from source with `cargo install --path . --features channels-full`, or a specific `channel-*` feature for Slack and other channels outside that distribution.
+cli-update-available = Update available: v{$current} -> v{$latest}
+cli-update-forcing-reinstall = Forcing reinstall: v{$current} -> v{$latest}
+cli-update-not-writable = install directory {$dir} is not writable ({$error}); re-run `cubeq update` with elevated privileges (sudo on macOS/Linux, an Administrator console on Windows)

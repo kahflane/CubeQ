@@ -1049,13 +1049,13 @@ cli-hardware-unsupported-platform = La découverte USB du matériel n'est pas pr
 cli-hardware-supported-platforms = Plateformes prises en charge : Linux, macOS, Windows.
 cli-selftest-all-passed = Les { $total } vérifications ont toutes réussi.
 cli-selftest-some-failed = { $failed }/{ $total } vérifications ont échoué.
-cli-selftest-channel-config-uncompiled = { $compiled } types de canaux compilés, { $configured } compilés/configurés ; configurés mais non compilés : { $names }. Compilez depuis les sources avec `./install.sh --source --preset full`, `--features channels-full` ou la fonctionnalité `channel-*` spécifique.
+cli-selftest-channel-config-uncompiled = { $compiled } types de canaux compilés, { $configured } compilés/configurés ; configurés mais non compilés : { $names }. Compilez depuis les sources avec `cargo install --path . --features channels-full` ou la fonctionnalité `channel-*` spécifique.
 cli-channels-header = Canaux :
 cli-channels-cli-always = {"  "}✅ CLI (toujours disponible)
 cli-channels-notion = {"  "}{ $status } Notion
 cli-channels-not-compiled-header = {"  "}Configurés mais non compilés dans ce binaire :
 cli-channels-not-compiled-entry = {"  "}🚫 {$name} (configuré, non compilé)
-cli-channels-build-hint = {"  "}Compilez depuis les sources avec `./install.sh --source --preset full`, `--features channels-full` ou la fonctionnalité `channel-*` spécifique.
+cli-channels-build-hint = {"  "}Compilez depuis les sources avec `cargo install --path . --features channels-full` ou la fonctionnalité `channel-*` spécifique.
 cli-channels-start-hint = Pour démarrer les canaux : cubeq channel start
 cli-channels-doctor-hint = Pour vérifier l'état :    cubeq channel doctor
 cli-channels-configure-hint = Pour configurer :      cubeq config set channels.<name>.<field>=<value>
@@ -1313,3 +1313,14 @@ channel-approval-opt-allow-always = Toujours autoriser
 channel-approval-opt-reject = Rejeter
 channel-approval-opt-reject-with-edit = Rejeter avec modification
 tool-git-operations-error-docker-runtime-write-unsupported = Les commandes d’écriture Git ne sont pas disponibles avec l’environnement d’exécution Docker, car elles ne peuvent pas être confinées à son conteneur.
+
+# ── update ──
+cli-update-about = Vérifier et appliquer les mises à jour de CubeQ
+cli-update-long-about =
+    Vérifie et applique les mises à jour de CubeQ.
+cli-update-already-current = Déjà à jour (v{ $version }).
+cli-update-success = Mise à jour réussie vers la v{ $version } !
+cli-update-prebuilt-channel-note = Les mises à jour précompilées utilisent la distribution standard légère. Compilez depuis les sources avec `cargo install --path . --features channels-full` ou une fonctionnalité `channel-*` spécifique pour Slack et les autres canaux non inclus dans cette distribution.
+cli-update-available = Mise à jour disponible : v{ $current } -> v{ $latest }
+cli-update-forcing-reinstall = Réinstallation forcée : v{ $current } -> v{ $latest }
+cli-update-not-writable = le répertoire d'installation { $dir } n'est pas accessible en écriture ({ $error }) ; relancez `cubeq update` avec des privilèges élevés (sudo sur macOS/Linux, une console Administrateur sous Windows)

@@ -121,6 +121,7 @@ Installing from a local path works without a registry.
 | `gateway` | Manage the HTTP/WebSocket gateway |
 | `service` | Install and control the OS service |
 | `status`, `doctor`, `self-test` | Inspect and diagnose the install |
+| `update` | Update to the latest GitHub release |
 | `config` | Read, set and migrate configuration |
 | `providers`, `models`, `auth` | Manage LLM providers and credentials |
 | `channel`, `channels` | Manage chat channels |
@@ -135,6 +136,17 @@ Installing from a local path works without a registry.
 | `completions` | Generate shell completions |
 
 Run `cubeq <command> --help` for details.
+
+## Updating
+
+`cubeq update` installs the latest release from
+[GitHub releases](https://github.com/kahflane/CubeQ/releases), with backup
+and rollback. Use `cubeq update --check` to only check.
+
+A release must attach one archive per platform, named
+`cubeq-<target>.tar.gz` (`.zip` on Windows), for example
+`cubeq-aarch64-apple-darwin.tar.gz`. Attach a `SHA256SUMS` file to have
+downloads verified.
 
 ## Project layout
 

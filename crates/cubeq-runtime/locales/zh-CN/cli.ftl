@@ -1045,13 +1045,13 @@ cli-hardware-unsupported-platform = 此平台不支持硬件 USB 发现。
 cli-hardware-supported-platforms = 支持的平台：Linux、macOS、Windows。
 cli-selftest-all-passed = 全部 {$total} 项检查通过。
 cli-selftest-some-failed = {$failed}/{$total} 项检查失败。
-cli-selftest-channel-config-uncompiled = {$compiled} 个通道类型已编译，{$configured} 个已编译且已配置；已配置但未编译：{$names}。请从源码构建：`./install.sh --source --preset full`、`--features channels-full`，或指定对应的 `channel-*` 功能。
+cli-selftest-channel-config-uncompiled = {$compiled} 个通道类型已编译，{$configured} 个已编译且已配置；已配置但未编译：{$names}。请从源码构建：`cargo install --path . --features channels-full`，或指定对应的 `channel-*` 功能。
 cli-channels-header = 渠道：
 cli-channels-cli-always = {"  "}✅ CLI（始终可用）
 cli-channels-notion = {"  "}{$status} Notion
 cli-channels-not-compiled-header = {"  "}已配置但未编译进此二进制文件：
 cli-channels-not-compiled-entry = {"  "}🚫 {$name}（已配置，未编译）
-cli-channels-build-hint = {"  "}请从源码构建：`./install.sh --source --preset full`、`--features channels-full`，或指定对应的 `channel-*` 功能。
+cli-channels-build-hint = {"  "}请从源码构建：`cargo install --path . --features channels-full`，或指定对应的 `channel-*` 功能。
 cli-channels-start-hint = 启动渠道：cubeq channel start
 cli-channels-doctor-hint = 检查健康状况：    cubeq channel doctor
 cli-channels-configure-hint = 配置方法：      cubeq config set channels.<name>.<field>=<value>
@@ -1312,3 +1312,14 @@ tool-git-operations-error-docker-runtime-write-unsupported = Git 写入命令在
 
 turn-context-window-exceeded-error = 本次请求超过所选模型的上下文容量。请减少请求内容或启用的工具，或选择上下文容量更大的模型。
 cron-agent-job-failed = 定时任务未能完成，请重试或联系管理员查看日志。
+
+# ── update ──
+cli-update-about = 检查并应用 CubeQ 更新
+cli-update-long-about =
+    检查并应用 CubeQ 更新。
+cli-update-already-current = 已是最新版本（v{$version}）。
+cli-update-success = 已成功更新至 v{$version}！
+cli-update-prebuilt-channel-note = 预构建更新使用精简的标准发行集。如需 Slack 和其他未包含在该发行集中的通道，请从源码构建：`cargo install --path . --features channels-full`，或指定对应的 `channel-*` 功能。
+cli-update-available = 有可用更新：v{$current} -> v{$latest}
+cli-update-forcing-reinstall = 强制重新安装：v{$current} -> v{$latest}
+cli-update-not-writable = 安装目录 {$dir} 不可写（{$error}）；请使用更高权限重新运行 `cubeq update`（在 macOS/Linux 上使用 sudo，在 Windows 上使用管理员控制台）

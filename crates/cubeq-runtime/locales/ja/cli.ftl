@@ -1044,13 +1044,13 @@ cli-hardware-unsupported-platform = このプラットフォームではハー�
 cli-hardware-supported-platforms = 対応プラットフォーム: Linux、macOS、Windows。
 cli-selftest-all-passed = {$total} 件すべてのチェックに合格しました。
 cli-selftest-some-failed = {$failed}/{$total} 件のチェックが失敗しました。
-cli-selftest-channel-config-uncompiled = コンパイル済みチャンネル種別 {$compiled} 件、コンパイル済みかつ設定済み {$configured} 件。設定済みですが未コンパイル: {$names}。ソースから `./install.sh --source --preset full`、`--features channels-full`、または特定の `channel-*` 機能でビルドしてください。
+cli-selftest-channel-config-uncompiled = コンパイル済みチャンネル種別 {$compiled} 件、コンパイル済みかつ設定済み {$configured} 件。設定済みですが未コンパイル: {$names}。ソースから `cargo install --path . --features channels-full`、または特定の `channel-*` 機能でビルドしてください。
 cli-channels-header = チャンネル:
 cli-channels-cli-always = {"  "}✅ CLI (常に利用可能)
 cli-channels-notion = {"  "}{$status} Notion
 cli-channels-not-compiled-header = {"  "}設定済みですが、このバイナリにはコンパイルされていません:
 cli-channels-not-compiled-entry = {"  "}🚫 {$name} (設定済み、未コンパイル)
-cli-channels-build-hint = {"  "}ソースから `./install.sh --source --preset full`、`--features channels-full`、または特定の `channel-*` 機能でビルドしてください。
+cli-channels-build-hint = {"  "}ソースから `cargo install --path . --features channels-full`、または特定の `channel-*` 機能でビルドしてください。
 cli-channels-start-hint = チャンネルを開始するには: cubeq channel start
 cli-channels-doctor-hint = 状態を確認するには:    cubeq channel doctor
 cli-channels-configure-hint = 設定するには:      cubeq config set channels.<name>.<field>=<value>
@@ -1308,3 +1308,14 @@ channel-approval-opt-allow-always = 常に許可
 channel-approval-opt-reject = 拒否
 channel-approval-opt-reject-with-edit = 編集して拒否
 tool-git-operations-error-docker-runtime-write-unsupported = Git の書き込みコマンドは Docker ランタイムでは利用できません。コンテナ内に閉じ込めることができないためです。
+
+# ── update ──
+cli-update-about = CubeQ更新を確認・適用
+cli-update-long-about =
+    CubeQ 更新を確認して適用します。
+cli-update-already-current = すでに最新です (v{$version})。
+cli-update-success = v{$version} に正常に更新しました！
+cli-update-prebuilt-channel-note = ビルド済み更新は軽量な標準配布セットを使います。Slack やその他の配布対象外チャンネルを使うには、`cargo install --path . --features channels-full`、または特定の `channel-*` 機能でソースからビルドしてください。
+cli-update-available = 更新が利用可能です: v{$current} -> v{$latest}
+cli-update-forcing-reinstall = 再インストールを強制します: v{$current} -> v{$latest}
+cli-update-not-writable = インストールディレクトリ {$dir} は書き込みできません（{$error}）。権限を昇格して `cubeq update` を再実行してください（macOS/Linux では sudo、Windows では管理者コンソール）
