@@ -143,10 +143,19 @@ Run `cubeq <command> --help` for details.
 [GitHub releases](https://github.com/kahflane/CubeQ/releases), with backup
 and rollback. Use `cubeq update --check` to only check.
 
-A release must attach one archive per platform, named
-`cubeq-<target>.tar.gz` (`.zip` on Windows), for example
-`cubeq-aarch64-apple-darwin.tar.gz`. Attach a `SHA256SUMS` file to have
-downloads verified.
+To publish a release, set `version` in `Cargo.toml`, commit, then push a
+matching tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow builds Linux (x86_64, arm64), macOS (Apple Silicon,
+Intel) and Windows (x86_64) archives named `cubeq-<target>.tar.gz` (`.zip` on
+Windows), adds a `SHA256SUMS` file, and publishes the GitHub release. Tags
+with a suffix such as `v0.2.0-rc.1` become prereleases, which `cubeq update`
+skips.
 
 ## Project layout
 

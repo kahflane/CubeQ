@@ -1,0 +1,136 @@
+# Build release archives and publish a GitHub release when a version tag is pushed.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag must match `version` in Cargo.toml. Each archive is named
+# `cubeq-<target>.tar.gz` (`.zip` on Windows) with the binaries at its root,
+# and SHA256SUMS covers every archive: this is the layout `cubeq update`
+# downloads and verifies. Tags with a `-` suffix (v0.2.0-rc.1) are published
+# as prereleases, which `cubeq update` skips.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Defaults plus the extras the published archives carry.
+  RELEASE_FEATURES: channel-matrix,channel-lark,channel-git,whatsapp-web,plugins-wasm-cranelift,tools-compat
+
+jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Tag matches Cargo.toml version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    # LTO and the WASM plugin host make release builds slow, macOS most of all.
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 180 || 120 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 links against glibc 2.35, so the binary runs on 22.04+.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: release-${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --features "$RELEASE_FEATURES" --target "${{ matrix.target }}"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/cubeq"
+          [ "$RUNNER_OS" = Windows ] && bin="$bin.exe"
+          out="$("$bin" --version)"
+          echo "$out"
+          case "$out" in
+            "cubeq ${GITHUB_REF_NAME#v}"*) ;;
+            *) echo "::error::unexpected version output: $out"; exit 1 ;;
+          esac
+
+      - name: Package
+        shell: bash
+        run: |
+          cd "target/${{ matrix.target }}/release"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$GITHUB_WORKSPACE/cubeq-${{ matrix.target }}.zip" cubeq.exe cubeq-acp-bridge.exe
+          else
+            tar czf "$GITHUB_WORKSPACE/cubeq-${{ matrix.target }}.tar.gz" cubeq cubeq-acp-bridge
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cubeq-${{ matrix.target }}
+          path: cubeq-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum cubeq-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "CubeQ $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            "${flags[@]}"
