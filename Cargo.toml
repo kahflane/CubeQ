@@ -4,35 +4,35 @@ exclude = ["vendor/crossterm-0.29.0"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kahflane/CubeQ"
 rust-version = "1.96.0"
 
 [workspace.dependencies]
-cubeq-api = { path = "crates/cubeq-api", version = "0.1.0" }
-cubeq-buildinfo = { path = "crates/cubeq-buildinfo", version = "0.1.0" }
-cubeq-infra = { path = "crates/cubeq-infra", version = "0.1.0" }
-cubeq-config = { path = "crates/cubeq-config", version = "0.1.0", default-features = false }
-cubeq-dist = { path = "crates/cubeq-dist", version = "0.1.0" }
-cubeq-log = { path = "crates/cubeq-log", version = "0.1.0" }
-cubeq-tls = { path = "crates/cubeq-tls", version = "0.1.0" }
-cubeq-relay-proto = { path = "crates/cubeq-relay-proto", version = "0.1.0" }
-cubeq-spawn = { path = "crates/cubeq-spawn", version = "0.1.0" }
-cubeq-commands = { path = "crates/cubeq-commands", version = "0.1.0" }
-cubeq-providers = { path = "crates/cubeq-providers", version = "0.1.0" }
-cubeq-memory = { path = "crates/cubeq-memory", version = "0.1.0" }
-cubeq-channels = { path = "crates/cubeq-channels", version = "0.1.0", default-features = false }
-cubeq-tools = { path = "crates/cubeq-tools", version = "0.1.0" }
-cubeq-sop-graph = { path = "crates/cubeq-sop-graph", version = "0.1.0", default-features = false }
-cubeq-runtime = { path = "crates/cubeq-runtime", version = "0.1.0", default-features = false }
-cubeq-eval = { path = "crates/cubeq-eval", version = "0.1.0" }
-cubeq-plugins = { path = "crates/cubeq-plugins", version = "0.1.0" }
-cubeq-gateway = { path = "crates/cubeq-gateway", version = "0.1.0" }
-cubeq-hardware = { path = "crates/cubeq-hardware", version = "0.1.0" }
-cubeq-tool-call-parser = { path = "crates/cubeq-tool-call-parser", version = "0.1.0" }
-cubeq-macros = { path = "crates/cubeq-macros", version = "0.1.0" }
+cubeq-api = { path = "crates/cubeq-api", version = "0.1.1" }
+cubeq-buildinfo = { path = "crates/cubeq-buildinfo", version = "0.1.1" }
+cubeq-infra = { path = "crates/cubeq-infra", version = "0.1.1" }
+cubeq-config = { path = "crates/cubeq-config", version = "0.1.1", default-features = false }
+cubeq-dist = { path = "crates/cubeq-dist", version = "0.1.1" }
+cubeq-log = { path = "crates/cubeq-log", version = "0.1.1" }
+cubeq-tls = { path = "crates/cubeq-tls", version = "0.1.1" }
+cubeq-relay-proto = { path = "crates/cubeq-relay-proto", version = "0.1.1" }
+cubeq-spawn = { path = "crates/cubeq-spawn", version = "0.1.1" }
+cubeq-commands = { path = "crates/cubeq-commands", version = "0.1.1" }
+cubeq-providers = { path = "crates/cubeq-providers", version = "0.1.1" }
+cubeq-memory = { path = "crates/cubeq-memory", version = "0.1.1" }
+cubeq-channels = { path = "crates/cubeq-channels", version = "0.1.1", default-features = false }
+cubeq-tools = { path = "crates/cubeq-tools", version = "0.1.1" }
+cubeq-sop-graph = { path = "crates/cubeq-sop-graph", version = "0.1.1", default-features = false }
+cubeq-runtime = { path = "crates/cubeq-runtime", version = "0.1.1", default-features = false }
+cubeq-eval = { path = "crates/cubeq-eval", version = "0.1.1" }
+cubeq-plugins = { path = "crates/cubeq-plugins", version = "0.1.1" }
+cubeq-gateway = { path = "crates/cubeq-gateway", version = "0.1.1" }
+cubeq-hardware = { path = "crates/cubeq-hardware", version = "0.1.1" }
+cubeq-tool-call-parser = { path = "crates/cubeq-tool-call-parser", version = "0.1.1" }
+cubeq-macros = { path = "crates/cubeq-macros", version = "0.1.1" }
 directories = "6.0"
 sys-locale = "0.3"
 hmac = "0.12"

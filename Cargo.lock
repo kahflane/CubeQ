@@ -1963,7 +1963,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2052,11 +2052,11 @@ dependencies = [
 
 [[package]]
 name = "cubeq-buildinfo"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "cubeq-channels"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
@@ -2143,14 +2143,14 @@ dependencies = [
 
 [[package]]
 name = "cubeq-commands"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "cubeq-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2197,11 +2197,11 @@ dependencies = [
 
 [[package]]
 name = "cubeq-dist"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "cubeq-eval"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-gateway"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-hardware"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-infra"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2329,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-log"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-memory"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-plugins"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-providers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-relay-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2481,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-sop-graph"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "schemars",
  "serde",
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-spawn"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cubeq-log",
  "serde_json",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chacha20poly1305 0.10.1",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-tool-call-parser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cubeq-api",
  "cubeq-log",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "cubeq-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-imap",
