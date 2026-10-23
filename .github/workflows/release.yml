@@ -54,8 +54,12 @@ jobs:
           # Ubuntu 22.04 links against glibc 2.35, so the binary runs on 22.04+.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          # The arm64 runner runs out of memory on the release build without
+          # swap and fewer parallel jobs.
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            swap: true
+            jobs: 2
           - os: macos-15
             target: aarch64-apple-darwin
           - os: macos-15-intel
@@ -72,9 +76,22 @@ jobs:
         with:
           prefix-key: release-${{ matrix.target }}
 
+      - name: Add swap
+        if: matrix.swap
+        run: |
+          sudo fallocate -l 8G "$RUNNER_TEMP/swapfile"
+          sudo chmod 600 "$RUNNER_TEMP/swapfile"
+          sudo mkswap "$RUNNER_TEMP/swapfile"
+          sudo swapon "$RUNNER_TEMP/swapfile"
+          free -h
+
       - name: Build
         shell: bash
-        run: cargo build --release --locked --features "$RELEASE_FEATURES" --target "${{ matrix.target }}"
+        run: >-
+          cargo build --release --locked
+          --features "$RELEASE_FEATURES"
+          --target "${{ matrix.target }}"
+          ${{ matrix.jobs && format('--jobs {0}', matrix.jobs) || '' }}
 
       - name: Smoke test
         shell: bash
