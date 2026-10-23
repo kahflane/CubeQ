@@ -7073,7 +7073,7 @@ pub struct SkillsConfig {
 #[serde(default)]
 pub struct SkillCreationConfig {
     /// Enable automatic skill creation after successful multi-step tasks.
-    /// Default: `false`.
+    /// Default: `true`.
     pub enabled: bool,
     /// Maximum number of auto-generated skills to keep.
     /// When exceeded, the oldest auto-generated skill is removed (LRU eviction).
@@ -7088,7 +7088,7 @@ pub struct SkillCreationConfig {
     /// turning this on never leaves a skill un-created. This is distinct from
     /// the `[skills.skill_improvement]` background review fork, which patches
     /// existing skills after use rather than creating new ones from a trace.
-    /// Default: `false`.
+    /// Default: `true`.
     #[serde(default = "default_reflection_enabled")]
     pub reflection_enabled: bool,
     /// Maximum characters of the final assistant answer fed into the
@@ -7107,7 +7107,7 @@ pub struct SkillCreationConfig {
 }
 
 fn default_reflection_enabled() -> bool {
-    false
+    true
 }
 
 fn default_max_final_answer_chars() -> usize {
@@ -7125,7 +7125,7 @@ fn default_max_task_chars() -> usize {
 impl Default for SkillCreationConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             max_skills: 500,
             similarity_threshold: 0.85,
             reflection_enabled: default_reflection_enabled(),
@@ -7157,10 +7157,9 @@ pub struct SkillInstallSuggestionsConfig {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "skills.skill_improvement"]
 pub struct SkillImprovementConfig {
-    /// Enable the background skill-review fork. Default: `false`.
-    /// Opt-in: users must explicitly enable this to allow post-turn skill
-    /// mutations.
-    #[serde(default)]
+    /// Enable the background skill-review fork. Default: `true`.
+    /// Set `false` to stop post-turn skill mutations.
+    #[serde(default = "default_skill_improvement_enabled")]
     pub enabled: bool,
     /// Minimum interval (in seconds) between reviews for the same skill.
     /// Acts as a durable rate limit on patches to any one skill. Default: `3600`.
@@ -7175,6 +7174,10 @@ pub struct SkillImprovementConfig {
     /// Caps the fork's LLM cost. Default: `8`.
     #[serde(default = "default_max_review_iterations")]
     pub max_review_iterations: u32,
+}
+
+fn default_skill_improvement_enabled() -> bool {
+    true
 }
 
 fn default_skill_improvement_cooldown() -> u64 {
@@ -7192,7 +7195,7 @@ fn default_max_review_iterations() -> u32 {
 impl Default for SkillImprovementConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_skill_improvement_enabled(),
             cooldown_secs: 3600,
             nudge_interval_iterations: 10,
             max_review_iterations: 8,
@@ -12713,10 +12716,10 @@ pub struct MemoryConfig {
     #[serde(default = "default_hygiene_enabled")]
     pub hygiene_enabled: bool,
     /// Also extract atomic durable facts from each consolidated turn and store
-    /// them as individual Core memories. Default off; the flip is sequenced in
-    /// a later phase. SQLite-only: enabling this requires the sqlite memory
-    /// backend globally and on every agent (validated at config load).
-    #[serde(default)]
+    /// them as individual Core memories. Default: `true`. Typed storage is
+    /// SQLite-only, so this applies only where the memory backend in use is
+    /// SQLite; other backends skip it.
+    #[serde(default = "default_consolidation_extract_facts")]
     pub consolidation_extract_facts: bool,
     /// Move daily/session files to the archive directory after this many days. Keeps the hot working set small without deleting history.
     #[serde(default = "default_archive_after_days")]
@@ -13257,6 +13260,10 @@ fn default_embedding_provider() -> String {
 fn default_auto_save() -> bool {
     true
 }
+
+fn default_consolidation_extract_facts() -> bool {
+    true
+}
 fn default_hygiene_enabled() -> bool {
     true
 }
@@ -13310,7 +13317,7 @@ impl Default for MemoryConfig {
             backend: "sqlite".into(),
             auto_save: true,
             hygiene_enabled: default_hygiene_enabled(),
-            consolidation_extract_facts: false,
+            consolidation_extract_facts: default_consolidation_extract_facts(),
             archive_after_days: default_archive_after_days(),
             purge_after_days: default_purge_after_days(),
             conversation_retention_days: default_conversation_retention_days(),
@@ -24517,12 +24524,10 @@ impl Config {
         // other backend would hit the trait default's explicit failure deep
         // inside spawned background consolidation, so reject the
         // configuration at load instead.
-        if self.memory.types.enabled || self.memory.consolidation_extract_facts {
-            let flag_path = if self.memory.types.enabled {
-                "memory.types.enabled"
-            } else {
-                "memory.consolidation_extract_facts"
-            };
+        // `consolidation_extract_facts` is not gated here: it defaults on and
+        // consolidation skips it on backends other than SQLite.
+        if self.memory.types.enabled {
+            let flag_path = "memory.types.enabled";
             // Mirror the runtime's backend classification
             // (`backend_kind_from_dotted`): trim, take the prefix before the
             // first dot, compare case-insensitively.
@@ -33257,16 +33262,17 @@ default_temperature = 0.7
     }
 
     #[test]
-    async fn memory_types_and_extract_facts_default_off() {
+    async fn extract_facts_defaults_on_and_memory_types_off() {
         let m = MemoryConfig::default();
-        assert!(!m.consolidation_extract_facts);
+        assert!(m.consolidation_extract_facts);
         assert!(!m.types.enabled);
     }
 
     #[test]
     async fn memory_config_without_types_keys_deserializes_off() {
         // Back-compat: configs written before [memory.types] and
-        // consolidation_extract_facts existed must still parse, with both off.
+        // consolidation_extract_facts existed must still parse, with typed
+        // memory off and fact extraction at its default (on).
         let toml_str = r#"
 workspace_dir = "/tmp/workspace"
 config_path = "/tmp/config.toml"
@@ -33277,7 +33283,7 @@ backend = "sqlite"
 auto_save = true
 "#;
         let parsed = parse_test_config(toml_str);
-        assert!(!parsed.memory.consolidation_extract_facts);
+        assert!(parsed.memory.consolidation_extract_facts);
         assert!(!parsed.memory.types.enabled);
     }
 
@@ -48387,7 +48393,7 @@ allowed_users = []
     #[test]
     async fn validate_rejects_typed_memory_flags_on_non_sqlite_agent_backend() {
         let mut config = multi_agent_test_config();
-        config.memory.consolidation_extract_facts = true;
+        config.memory.types.enabled = true;
 
         let beta = AliasedAgentConfig {
             channels: vec![crate::providers::ChannelRef::new("telegram.draft")],
@@ -48405,7 +48411,7 @@ allowed_users = []
             .expect_err("typed memory with a non-sqlite agent backend must fail validation");
         let msg = err.to_string();
         assert!(
-            msg.contains("memory.consolidation_extract_facts")
+            msg.contains("memory.types.enabled")
                 && msg.contains("agents.beta.memory.backend")
                 && msg.contains("Markdown"),
             "expected SQLite-only explanation naming the agent, got: {msg}"

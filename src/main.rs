@@ -16808,12 +16808,12 @@ mod tests {
         let cli = Cli::try_parse_from([
             "cubeq",
             "--config-dir",
-            "C:\\Users\\agent\\CubeQ",
+            "C:\\Users\\agent\\Cube Q",
             "service",
             "run-windows-daemon",
         ])
         .expect("internal Windows task runner should parse");
-        assert_eq!(cli.config_dir.as_deref(), Some("C:\\Users\\agent\\CubeQ"));
+        assert_eq!(cli.config_dir.as_deref(), Some("C:\\Users\\agent\\Cube Q"));
         assert!(matches!(
             cli.command,
             Commands::Service {

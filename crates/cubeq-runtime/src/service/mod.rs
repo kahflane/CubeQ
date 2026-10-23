@@ -4396,12 +4396,12 @@ mod service_helper_tests {
     fn windows_task_action_binds_the_config_directory_without_cmd_redirection() {
         let action = windows_task_action(
             Path::new(r"C:\Program Files\CubeQ\cubeq.exe"),
-            Path::new(r"C:\Users\agent\CubeQ"),
+            Path::new(r"C:\Users\agent\Cube Q"),
         )
         .expect("Windows action");
         assert_eq!(
             action,
-            r#""C:\Program Files\CubeQ\cubeq.exe" --config-dir "C:\Users\agent\CubeQ" service run-windows-daemon"#
+            r#""C:\Program Files\CubeQ\cubeq.exe" --config-dir "C:\Users\agent\Cube Q" service run-windows-daemon"#
         );
         assert!(!action.contains(".cmd"));
         assert!(!action.contains(">>"));
@@ -4556,7 +4556,7 @@ mod service_helper_tests {
             "/usr/local/bin/cubeq"
         )));
         assert!(!openrc_executable_path_is_safe(Path::new(
-            "/opt/cubeq/bin/cubeq"
+            "/opt/cube q/bin/cubeq"
         )));
         assert!(!openrc_executable_path_is_safe(Path::new(
             "/opt/$zero/bin/cubeq"

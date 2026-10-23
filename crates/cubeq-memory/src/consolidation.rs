@@ -86,10 +86,13 @@ pub async fn consolidate_turn(
         turn_text.clone()
     };
 
+    // Typed fact storage is SQLite-only. Wrappers report their inner
+    // backend's name, so this is the backend that will store the facts.
+    let extract_facts = memory_config.consolidation_extract_facts && memory.name() == "sqlite";
+
     // Typed memory must ask for a subtype even when atomic-fact extraction stays
     // disabled. Reusing the extended schema keeps the model contract explicit.
-    let system_prompt = if memory_config.types.enabled || memory_config.consolidation_extract_facts
-    {
+    let system_prompt = if memory_config.types.enabled || extract_facts {
         CONSOLIDATION_TYPED_SYSTEM_PROMPT
     } else {
         CONSOLIDATION_SYSTEM_PROMPT
@@ -131,12 +134,12 @@ pub async fn consolidate_turn(
             .await?;
     }
 
-    // Phase 2: extract atomic typed facts (gated; default off). Runs before
+    // Phase 2: extract atomic typed facts (SQLite only). Runs before
     // the primary Core update because that path exits early when the update
     // dedups or merges into a survivor, and a duplicate primary update must
     // not silently suppress this turn's fact writes. An exact overlap belongs
     // to the primary update so its more specific subtype wins.
-    if memory_config.consolidation_extract_facts {
+    if extract_facts {
         store_typed_facts(
             memory,
             memory_config,
@@ -558,12 +561,15 @@ mod tests {
         writes: Mutex<Vec<RecordedWrite>>,
         /// Entries returned from every `recall` call (empty by default).
         recall_entries: Mutex<Vec<MemoryEntry>>,
+        /// Backend name to report; `None` stands in for SQLite, the backend
+        /// typed facts are stored in.
+        backend: Option<&'static str>,
     }
 
     #[async_trait]
     impl Memory for RecordingMemory {
         fn name(&self) -> &str {
-            "recording"
+            self.backend.unwrap_or("sqlite")
         }
 
         async fn store(
@@ -753,7 +759,10 @@ mod tests {
     async fn flags_off_consolidation_keeps_master_write_shape() {
         let provider = ScriptedProvider::new(TYPED_RESPONSE);
         let memory = RecordingMemory::default();
-        let config = MemoryConfig::default();
+        let config = MemoryConfig {
+            consolidation_extract_facts: false,
+            ..MemoryConfig::default()
+        };
 
         run_consolidation(&provider, &memory, &config)
             .await
@@ -809,6 +818,7 @@ mod tests {
         let memory = RecordingMemory::default();
         let config = MemoryConfig {
             types: MemoryTypesConfig { enabled: true },
+            consolidation_extract_facts: false,
             ..MemoryConfig::default()
         };
 
@@ -1065,6 +1075,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extract_facts_is_skipped_off_sqlite() {
+        let provider = ScriptedProvider::new(TYPED_RESPONSE);
+        let memory = RecordingMemory {
+            backend: Some("markdown"),
+            ..RecordingMemory::default()
+        };
+        let config = MemoryConfig {
+            consolidation_extract_facts: true,
+            ..MemoryConfig::default()
+        };
+
+        run_consolidation(&provider, &memory, &config)
+            .await
+            .unwrap();
+
+        let prompts = provider.system_prompts.lock();
+        assert_eq!(prompts.as_slice(), [CONSOLIDATION_SYSTEM_PROMPT]);
+        let writes = memory.writes.lock();
+        assert!(!writes.is_empty(), "the turn itself is still consolidated");
+        assert!(writes.iter().all(|w| !matches!(
+            w,
+            RecordedWrite::StoreWithOptions { key, .. } if key.starts_with("core_fact_")
+        )));
+    }
+
+    #[tokio::test]
     async fn extract_facts_stores_atomic_typed_facts() {
         let provider = ScriptedProvider::new(TYPED_RESPONSE);
         let memory = RecordingMemory::default();
@@ -1228,7 +1264,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let sqlite = crate::sqlite::SqliteMemory::new("test", tmp.path()).unwrap();
         let provider = ScriptedProvider::new(TYPED_RESPONSE);
-        let config = MemoryConfig::default();
+        let config = MemoryConfig {
+            consolidation_extract_facts: false,
+            ..MemoryConfig::default()
+        };
 
         run_consolidation(&provider, &sqlite, &config)
             .await

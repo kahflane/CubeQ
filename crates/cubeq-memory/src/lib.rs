@@ -1050,13 +1050,10 @@ pub async fn create_memory_for_agent(
     // enforce again here: failing agent-memory construction is an
     // operator-visible startup error and keeps background consolidation
     // from ever running typed writes into a backend that would reject
-    // them deep inside spawned work.
-    if config.memory.types.enabled || config.memory.consolidation_extract_facts {
-        let flag = if config.memory.types.enabled {
-            "memory.types.enabled"
-        } else {
-            "memory.consolidation_extract_facts"
-        };
+    // them deep inside spawned work. `consolidation_extract_facts` is not
+    // gated: it defaults on and consolidation skips it off SQLite.
+    if config.memory.types.enabled {
+        let flag = "memory.types.enabled";
         let global_kind = backend_kind_from_dotted(&config.memory.backend);
         if global_kind != "sqlite" {
             anyhow::bail!(
