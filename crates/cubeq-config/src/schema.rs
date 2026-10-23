@@ -452,6 +452,17 @@ pub struct Config {
     #[group = "Tools"]
     pub browser: BrowserConfig,
 
+    /// Desktop computer-use configuration (`[computer_use]`).
+    ///
+    /// This is intentionally separate from `[browser.computer_use]`: browser
+    /// automation and whole-desktop control have different policy and approval
+    /// boundaries. The desktop tool is also compile-time gated and remains
+    /// unavailable unless the binary is built with `--features computer-use`.
+    #[serde(default)]
+    #[nested]
+    #[group = "Tools"]
+    pub computer_use: ComputerUseConfig,
+
     /// Browser delegation configuration (`[browser_delegate]`).
     ///
     /// Delegates browser-based tasks to a browser-capable CLI subprocess (e.g.
@@ -461,7 +472,7 @@ pub struct Config {
     /// sessions survive across invocations.
     ///
     /// Fields:
-    /// - `enabled` (`bool`, default `false`) — enable the browser delegation tool.
+    /// - `enabled` (`bool`, default `true`) — enable the browser delegation tool.
     /// - `cli_binary` (`String`, default `"claude"`) — CLI binary to spawn for browser tasks.
     /// - `chrome_profile_dir` (`String`, default `""`) — Chrome user-data directory for
     ///   persistent SSO sessions. When empty, a fresh profile is used each invocation.
@@ -7209,7 +7220,8 @@ impl Default for SkillImprovementConfig {
 #[prefix = "pipeline"]
 pub struct PipelineConfig {
     /// Enable the `execute_pipeline` meta-tool.
-    /// Default: `false`.
+    /// Default: `false`, because it runs nothing until `allowed_tools` names
+    /// the tools its steps may call.
     #[serde(default)]
     pub enabled: bool,
     /// Maximum number of steps allowed in a single pipeline invocation.
@@ -8632,6 +8644,129 @@ impl Default for SecretsConfig {
 
 // ── Browser (friendly-service browsing only) ───────────────────
 
+/// Hard per-action text limit chosen so approval surfaces display the complete
+/// intended input without truncating a hidden suffix.
+pub const COMPUTER_USE_MAX_TEXT_CHARS: usize = cubeq_api::tool::CONFIRMATION_SUMMARY_VALUE_CHARS;
+/// Maximum exact application selectors admitted by one desktop policy.
+pub const COMPUTER_USE_MAX_ALLOWED_APPLICATIONS: usize = 128;
+/// Maximum Unicode scalar values in one exact application selector.
+pub const COMPUTER_USE_MAX_APPLICATION_CHARS: usize = 512;
+/// Shorter deadlines make post-input outcomes needlessly ambiguous.
+pub const COMPUTER_USE_MIN_TIMEOUT_MS: u64 = 1_000;
+/// Upper bound prevents a stuck platform operation from monopolizing desktop control.
+pub const COMPUTER_USE_MAX_TIMEOUT_MS: u64 = 60_000;
+
+/// Application boundary enforced by the native computer-use driver.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, cubeq_macros::ConfigEnum,
+)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseApplicationAccess {
+    /// Admit only exact entries from `allowed_applications`.
+    Allowlist,
+    /// Admit any valid application identity resolved by the operating system.
+    #[default]
+    Desktop,
+}
+
+/// Operator-confirmation cadence for mutating computer-use actions.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, cubeq_macros::ConfigEnum,
+)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseConfirmationMode {
+    /// Require a new operator decision immediately before every input action.
+    #[default]
+    Fresh,
+    /// Use ordinary risk-profile approval, including session `Always` grants.
+    Session,
+}
+
+/// Whole-desktop computer-use configuration (`[computer_use]` section).
+///
+/// This section is the canonical operator policy for the separate desktop
+/// tool. The native platform driver stays private to the feature-gated tool;
+/// the core runtime only exposes it when both this config and the
+/// `computer-use` build feature are enabled.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "computer_use"]
+#[integration(
+    category = "ToolsAutomation",
+    display_name = "Computer use",
+    description = "Accessibility-first desktop inspection and controlled input",
+    status_field = "enabled"
+)]
+pub struct ComputerUseConfig {
+    /// Enable the desktop `computer_use` tool. On by default in a
+    /// computer-use build.
+    #[serde(default = "default_computer_use_enabled")]
+    pub enabled: bool,
+    /// Application boundary: all `desktop` apps (default) or an exact `allowlist`.
+    #[serde(default)]
+    pub application_access: ComputerUseApplicationAccess,
+    /// Approval cadence for input actions: `fresh` (default) or `session`.
+    #[serde(default)]
+    pub confirmation_mode: ComputerUseConfirmationMode,
+    /// Maximum wall-clock time for one platform action, in milliseconds.
+    #[serde(default = "default_computer_use_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Applications the native driver may inspect or control.
+    ///
+    /// Used only when `application_access = "allowlist"`. Matching is exact
+    /// against the current process/application name or bundle identifier. An
+    /// empty list denies application inspection and all input actions.
+    #[serde(default)]
+    pub allowed_applications: Vec<String>,
+    /// Optional lower X bound in global logical display coordinates.
+    #[serde(default)]
+    pub min_coordinate_x: Option<i64>,
+    /// Optional lower Y bound in global logical display coordinates.
+    #[serde(default)]
+    pub min_coordinate_y: Option<i64>,
+    /// Optional upper X bound in global logical display coordinates.
+    #[serde(default)]
+    pub max_coordinate_x: Option<i64>,
+    /// Optional upper Y bound in global logical display coordinates.
+    #[serde(default)]
+    pub max_coordinate_y: Option<i64>,
+    /// Maximum Unicode scalar values accepted by one text-input action.
+    #[serde(default = "default_computer_use_max_text_chars")]
+    pub max_text_chars: usize,
+}
+
+fn default_computer_use_timeout_ms() -> u64 {
+    15_000
+}
+
+fn default_computer_use_max_text_chars() -> usize {
+    COMPUTER_USE_MAX_TEXT_CHARS
+}
+
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_computer_use_enabled() -> bool {
+    cfg!(feature = "computer-use")
+}
+
+impl Default for ComputerUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_computer_use_enabled(),
+            application_access: ComputerUseApplicationAccess::default(),
+            confirmation_mode: ComputerUseConfirmationMode::default(),
+            timeout_ms: default_computer_use_timeout_ms(),
+            allowed_applications: Vec::new(),
+            min_coordinate_x: None,
+            min_coordinate_y: None,
+            max_coordinate_x: None,
+            max_coordinate_y: None,
+            max_text_chars: default_computer_use_max_text_chars(),
+        }
+    }
+}
+
 /// Computer-use sidecar configuration (`[browser.computer_use]` section).
 ///
 /// Delegates OS-level mouse, keyboard, and screenshot actions to a local sidecar.
@@ -8714,7 +8849,7 @@ pub struct BrowserConfig {
     /// leave this off unless the agent needs it. It is also absent from
     /// [`default_auto_approve`], so `browser` calls hit the approval gate
     /// unless a risk profile lists it explicitly.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub automation_enabled: bool,
     /// Allowed domains for `browser_open` (exact or subdomain match)
     #[serde(default = "default_browser_allowed_domains")]
@@ -8783,7 +8918,7 @@ impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            automation_enabled: false,
+            automation_enabled: true,
             allowed_domains: vec!["*".into()],
             session_name: None,
             backend: default_browser_backend(),
@@ -9061,7 +9196,7 @@ impl Default for LinkEnricherConfig {
 #[prefix = "text_browser"]
 pub struct TextBrowserConfig {
     /// Enable `text_browser` tool
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Preferred text browser ("lynx", "links", or "w3m"). If unset, auto-detects.
     #[serde(default)]
@@ -9091,7 +9226,7 @@ fn default_text_browser_timeout_secs() -> u64 {
 impl Default for TextBrowserConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             preferred_browser: None,
             timeout_secs: default_text_browser_timeout_secs(),
             allowed_private_hosts: vec![],
@@ -9251,8 +9386,8 @@ impl Default for WebSearchConfig {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "project_intel"]
 pub struct ProjectIntelConfig {
-    /// Enable the project_intel tool. Default: false.
-    #[serde(default)]
+    /// Enable the project_intel tool. Default: true.
+    #[serde(default = "default_project_intel_enabled")]
     pub enabled: bool,
     /// Default report language (en, de, fr, it). Default: "en".
     #[serde(default = "default_project_intel_language")]
@@ -9289,10 +9424,15 @@ fn default_project_intel_risk_sensitivity() -> String {
     "medium".into()
 }
 
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_project_intel_enabled() -> bool {
+    crate::opt_in_tools::OptInTool::ProjectIntel.compiled()
+}
+
 impl Default for ProjectIntelConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_project_intel_enabled(),
             default_language: default_project_intel_language(),
             report_output_dir: default_project_intel_report_dir(),
             templates_dir: None,
@@ -9378,7 +9518,7 @@ impl Default for BackupConfig {
 #[prefix = "data_retention"]
 pub struct DataRetentionConfig {
     /// Enable the read-only `data_management` retention-preview tool.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Days of data to retain before preview eligibility.
     #[serde(default = "default_retention_days")]
@@ -9399,7 +9539,7 @@ fn default_retention_days() -> u64 {
 impl Default for DataRetentionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             retention_days: default_retention_days(),
             dry_run: false,
             categories: Vec::new(),
@@ -9591,8 +9731,8 @@ impl Default for GoogleWorkspaceConfig {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "knowledge"]
 pub struct KnowledgeConfig {
-    /// Enable the knowledge graph tool. Default: false.
-    #[serde(default)]
+    /// Enable the knowledge graph tool. Default: true.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Path to the knowledge graph SQLite database. A leading `~` is expanded
     /// at use time via [`KnowledgeConfig::resolved_db_path`].
@@ -9620,7 +9760,7 @@ fn default_knowledge_max_nodes() -> usize {
 impl Default for KnowledgeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             db_path: default_knowledge_db_path(),
             max_nodes: default_knowledge_max_nodes(),
             auto_capture: false,
@@ -10548,7 +10688,7 @@ impl Default for FileDownloadConfig {
 #[prefix = "claude_code"]
 pub struct ClaudeCodeConfig {
     /// Enable the `claude_code` tool
-    #[serde(default)]
+    #[serde(default = "default_claude_code_enabled")]
     pub enabled: bool,
     /// Maximum execution time in seconds (coding tasks can be long)
     #[serde(default = "default_claude_code_timeout_secs")]
@@ -10580,10 +10720,15 @@ fn default_claude_code_max_output_bytes() -> usize {
     2_097_152
 }
 
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_claude_code_enabled() -> bool {
+    crate::opt_in_tools::OptInTool::ClaudeCode.compiled()
+}
+
 impl Default for ClaudeCodeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_claude_code_enabled(),
             timeout_secs: default_claude_code_timeout_secs(),
             allowed_tools: default_claude_code_allowed_tools(),
             system_prompt: None,
@@ -10605,7 +10750,7 @@ impl Default for ClaudeCodeConfig {
 #[prefix = "claude_code_runner"]
 pub struct ClaudeCodeRunnerConfig {
     /// Enable the `claude_code_runner` tool
-    #[serde(default)]
+    #[serde(default = "default_claude_code_runner_enabled")]
     pub enabled: bool,
     /// SSH host for session handoff links (e.g. "myhost.example.com")
     #[serde(default)]
@@ -10626,10 +10771,15 @@ fn default_claude_code_runner_session_ttl() -> u64 {
     3600
 }
 
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_claude_code_runner_enabled() -> bool {
+    crate::opt_in_tools::OptInTool::ClaudeCodeRunner.compiled()
+}
+
 impl Default for ClaudeCodeRunnerConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_claude_code_runner_enabled(),
             ssh_host: None,
             tmux_prefix: default_claude_code_runner_tmux_prefix(),
             session_ttl: default_claude_code_runner_session_ttl(),
@@ -10649,7 +10799,7 @@ impl Default for ClaudeCodeRunnerConfig {
 #[prefix = "codex_cli"]
 pub struct CodexCliConfig {
     /// Enable the `codex_cli` tool
-    #[serde(default)]
+    #[serde(default = "default_codex_cli_enabled")]
     pub enabled: bool,
     /// Maximum execution time in seconds (coding tasks can be long)
     #[serde(default = "default_codex_cli_timeout_secs")]
@@ -10955,10 +11105,15 @@ fn default_codex_cli_max_output_bytes() -> usize {
     2_097_152
 }
 
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_codex_cli_enabled() -> bool {
+    crate::opt_in_tools::OptInTool::CodexCli.compiled()
+}
+
 impl Default for CodexCliConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_codex_cli_enabled(),
             timeout_secs: default_codex_cli_timeout_secs(),
             max_output_bytes: default_codex_cli_max_output_bytes(),
             env_passthrough: Vec::new(),
@@ -10979,7 +11134,7 @@ impl Default for CodexCliConfig {
 #[prefix = "gemini_cli"]
 pub struct GeminiCliConfig {
     /// Enable the `gemini_cli` tool
-    #[serde(default)]
+    #[serde(default = "default_gemini_cli_enabled")]
     pub enabled: bool,
     /// Maximum execution time in seconds (coding tasks can be long)
     #[serde(default = "default_gemini_cli_timeout_secs")]
@@ -11001,10 +11156,15 @@ fn default_gemini_cli_max_output_bytes() -> usize {
     2_097_152
 }
 
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_gemini_cli_enabled() -> bool {
+    crate::opt_in_tools::OptInTool::GeminiCli.compiled()
+}
+
 impl Default for GeminiCliConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_gemini_cli_enabled(),
             timeout_secs: default_gemini_cli_timeout_secs(),
             max_output_bytes: default_gemini_cli_max_output_bytes(),
             env_passthrough: Vec::new(),
@@ -11024,7 +11184,7 @@ impl Default for GeminiCliConfig {
 #[prefix = "opencode_cli"]
 pub struct OpenCodeCliConfig {
     /// Enable the `opencode_cli` tool
-    #[serde(default)]
+    #[serde(default = "default_opencode_cli_enabled")]
     pub enabled: bool,
     /// Maximum execution time in seconds (coding tasks can be long)
     #[serde(default = "default_opencode_cli_timeout_secs")]
@@ -11046,10 +11206,15 @@ fn default_opencode_cli_max_output_bytes() -> usize {
     2_097_152
 }
 
+/// On by default when this build compiles the tool, so a lean build stays quiet.
+fn default_opencode_cli_enabled() -> bool {
+    crate::opt_in_tools::OptInTool::OpenCodeCli.compiled()
+}
+
 impl Default for OpenCodeCliConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_opencode_cli_enabled(),
             timeout_secs: default_opencode_cli_timeout_secs(),
             max_output_bytes: default_opencode_cli_max_output_bytes(),
             env_passthrough: Vec::new(),
@@ -20925,7 +21090,7 @@ impl Default for JiraConfig {
 #[prefix = "cloud_ops"]
 pub struct CloudOpsConfig {
     /// Enable cloud operations tools. Default: false.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Default cloud model_provider for analysis context. Default: "aws".
     #[serde(default = "default_cloud_ops_cloud")]
@@ -20947,7 +21112,7 @@ pub struct CloudOpsConfig {
 impl Default for CloudOpsConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             default_cloud: default_cloud_ops_cloud(),
             supported_clouds: default_cloud_ops_supported_clouds(),
             iac_tools: default_cloud_ops_iac_tools(),
@@ -21114,7 +21279,7 @@ impl Default for ConversationalAiConfig {
 #[prefix = "security_ops"]
 pub struct SecurityOpsConfig {
     /// Enable security operations tools.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Directory containing incident response playbook definitions (JSON).
     #[serde(default = "default_playbooks_dir")]
@@ -21156,7 +21321,7 @@ fn default_report_output_dir() -> String {
 impl Default for SecurityOpsConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             playbooks_dir: default_playbooks_dir(),
             auto_triage: false,
             require_approval_for_actions: true,
@@ -21234,6 +21399,7 @@ impl Default for Config {
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
+            computer_use: ComputerUseConfig::default(),
             browser_delegate: crate::scattered_types::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
@@ -24207,6 +24373,110 @@ impl Config {
     /// Called after TOML deserialization and env-override application to catch
     /// obviously invalid values early instead of failing at arbitrary runtime points.
     pub fn validate(&self) -> Result<()> {
+        if self.computer_use.enabled {
+            if !(COMPUTER_USE_MIN_TIMEOUT_MS..=COMPUTER_USE_MAX_TIMEOUT_MS)
+                .contains(&self.computer_use.timeout_ms)
+            {
+                validation_bail!(
+                    InvalidNumericRange,
+                    "computer_use.timeout_ms",
+                    "computer_use.timeout_ms must be between {COMPUTER_USE_MIN_TIMEOUT_MS} and {COMPUTER_USE_MAX_TIMEOUT_MS}"
+                );
+            }
+            if self.computer_use.max_text_chars == 0
+                || self.computer_use.max_text_chars > COMPUTER_USE_MAX_TEXT_CHARS
+            {
+                validation_bail!(
+                    InvalidNumericRange,
+                    "computer_use.max_text_chars",
+                    "computer_use.max_text_chars must be between 1 and {COMPUTER_USE_MAX_TEXT_CHARS} so approval shows the complete input"
+                );
+            }
+            if self.computer_use.application_access == ComputerUseApplicationAccess::Desktop
+                && !self.computer_use.allowed_applications.is_empty()
+            {
+                validation_bail!(
+                    InvalidFormat,
+                    "computer_use.allowed_applications",
+                    "computer_use.allowed_applications must be empty when application_access='desktop'"
+                );
+            }
+            if self
+                .computer_use
+                .allowed_applications
+                .iter()
+                .any(|application| application == "*")
+            {
+                validation_bail!(
+                    InvalidFormat,
+                    "computer_use.allowed_applications",
+                    "computer_use.allowed_applications does not accept wildcards; set computer_use.application_access='desktop' for desktop-wide control"
+                );
+            }
+            for (min, max, axis) in [
+                (
+                    self.computer_use.min_coordinate_x,
+                    self.computer_use.max_coordinate_x,
+                    "x",
+                ),
+                (
+                    self.computer_use.min_coordinate_y,
+                    self.computer_use.max_coordinate_y,
+                    "y",
+                ),
+            ] {
+                if let (Some(min), Some(max)) = (min, max)
+                    && min > max
+                {
+                    let path = format!("computer_use.{axis}_coordinate_bounds");
+                    validation_bail!(
+                        InvalidNumericRange,
+                        path,
+                        "computer_use minimum {axis} coordinate {min} exceeds maximum {max}"
+                    );
+                }
+            }
+            if self
+                .computer_use
+                .allowed_applications
+                .iter()
+                .any(|application| {
+                    application.trim() != application
+                        || application.is_empty()
+                        || application.chars().count() > COMPUTER_USE_MAX_APPLICATION_CHARS
+                        || application
+                            .chars()
+                            .any(cubeq_api::tool::is_unsafe_confirmation_character)
+                })
+            {
+                validation_bail!(
+                    InvalidFormat,
+                    "computer_use.allowed_applications",
+                    "computer_use.allowed_applications entries must be trimmed, single-line, and at most {COMPUTER_USE_MAX_APPLICATION_CHARS} characters"
+                );
+            }
+            if self.computer_use.allowed_applications.len() > COMPUTER_USE_MAX_ALLOWED_APPLICATIONS
+            {
+                validation_bail!(
+                    InvalidNumericRange,
+                    "computer_use.allowed_applications",
+                    "computer_use.allowed_applications accepts at most {COMPUTER_USE_MAX_ALLOWED_APPLICATIONS} entries"
+                );
+            }
+            let mut unique_applications = std::collections::HashSet::new();
+            if self
+                .computer_use
+                .allowed_applications
+                .iter()
+                .any(|application| !unique_applications.insert(application))
+            {
+                validation_bail!(
+                    InvalidFormat,
+                    "computer_use.allowed_applications",
+                    "computer_use.allowed_applications entries must be unique"
+                );
+            }
+        }
         validate_memory_rerank_config(&self.memory)?;
         self.cost.rates.validate()?;
 
@@ -33775,6 +34045,7 @@ auto_save = true
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
+            computer_use: ComputerUseConfig::default(),
             browser_delegate: crate::scattered_types::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
@@ -35212,6 +35483,7 @@ default_temperature = 0.7
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
+            computer_use: ComputerUseConfig::default(),
             browser_delegate: crate::scattered_types::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
@@ -37080,12 +37352,136 @@ default_temperature = 0.7
     }
 
     #[test]
+    async fn computer_use_config_defaults_to_desktop_with_fresh_approval() {
+        let c = ComputerUseConfig::default();
+        assert_eq!(c.enabled, cfg!(feature = "computer-use"));
+        assert_eq!(c.application_access, ComputerUseApplicationAccess::Desktop);
+        assert_eq!(c.confirmation_mode, ComputerUseConfirmationMode::Fresh);
+        assert_eq!(c.timeout_ms, 15_000);
+        assert!(c.allowed_applications.is_empty());
+        assert!(c.min_coordinate_x.is_none());
+        assert!(c.min_coordinate_y.is_none());
+        assert!(c.max_coordinate_x.is_none());
+        assert!(c.max_coordinate_y.is_none());
+        assert_eq!(c.max_text_chars, COMPUTER_USE_MAX_TEXT_CHARS);
+    }
+
+    #[test]
+    async fn computer_use_config_serde_roundtrip() {
+        let config = ComputerUseConfig {
+            enabled: true,
+            application_access: ComputerUseApplicationAccess::Allowlist,
+            confirmation_mode: ComputerUseConfirmationMode::Session,
+            timeout_ms: 8_000,
+            allowed_applications: vec!["Preview".into()],
+            min_coordinate_x: Some(-1_920),
+            min_coordinate_y: Some(0),
+            max_coordinate_x: Some(2_560),
+            max_coordinate_y: Some(1_440),
+            max_text_chars: 64,
+        };
+        let encoded = toml::to_string(&config).unwrap();
+        let parsed: ComputerUseConfig = toml::from_str(&encoded).unwrap();
+        assert!(parsed.enabled);
+        assert_eq!(
+            parsed.application_access,
+            ComputerUseApplicationAccess::Allowlist
+        );
+        assert_eq!(
+            parsed.confirmation_mode,
+            ComputerUseConfirmationMode::Session
+        );
+        assert_eq!(parsed.allowed_applications, vec!["Preview"]);
+        assert_eq!(parsed.min_coordinate_x, Some(-1_920));
+        assert_eq!(parsed.max_coordinate_y, Some(1_440));
+        assert_eq!(parsed.max_text_chars, 64);
+    }
+
+    #[test]
+    async fn computer_use_desktop_session_mode_is_explicit_and_round_trips() {
+        let parsed: ComputerUseConfig = toml::from_str(
+            r#"
+enabled = true
+application_access = "desktop"
+confirmation_mode = "session"
+allowed_applications = []
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.application_access,
+            ComputerUseApplicationAccess::Desktop
+        );
+        assert_eq!(
+            parsed.confirmation_mode,
+            ComputerUseConfirmationMode::Session
+        );
+        assert!(parsed.allowed_applications.is_empty());
+
+        assert!(toml::from_str::<ComputerUseConfig>("application_access = 'everything'").is_err());
+        assert!(toml::from_str::<ComputerUseConfig>("confirmation_mode = 'never'").is_err());
+    }
+
+    #[test]
+    async fn computer_use_missing_section_uses_defaults() {
+        let parsed = parse_test_config("");
+        assert_eq!(parsed.computer_use.enabled, cfg!(feature = "computer-use"));
+        assert_eq!(
+            parsed.computer_use.application_access,
+            ComputerUseApplicationAccess::Desktop
+        );
+        assert_eq!(
+            parsed.computer_use.confirmation_mode,
+            ComputerUseConfirmationMode::Fresh
+        );
+        assert!(parsed.computer_use.allowed_applications.is_empty());
+    }
+
+    #[test]
+    async fn computer_use_enabled_config_rejects_unreviewable_or_duplicate_applications() {
+        let mut config = Config::default();
+        config.computer_use.enabled = true;
+        config.computer_use.allowed_applications = vec!["Preview\nspoof".into()];
+        assert!(config.validate().is_err());
+
+        config.computer_use.allowed_applications = vec!["Preview".into(), "Preview".into()];
+        assert!(config.validate().is_err());
+
+        config.computer_use.allowed_applications = vec!["*".into()];
+        assert!(config.validate().is_err());
+
+        config.computer_use.application_access = ComputerUseApplicationAccess::Desktop;
+        config.computer_use.allowed_applications = vec!["Preview".into()];
+        assert!(config.validate().is_err());
+
+        config.computer_use.allowed_applications.clear();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    async fn computer_use_enabled_config_rejects_invalid_limits() {
+        let mut config = Config::default();
+        config.computer_use.enabled = true;
+        config.computer_use.timeout_ms = COMPUTER_USE_MIN_TIMEOUT_MS - 1;
+        assert!(config.validate().is_err());
+
+        config.computer_use.timeout_ms = default_computer_use_timeout_ms();
+        config.computer_use.max_text_chars = COMPUTER_USE_MAX_TEXT_CHARS + 1;
+        assert!(config.validate().is_err());
+
+        config.computer_use.max_text_chars = default_computer_use_max_text_chars();
+        config.computer_use.min_coordinate_x = Some(2);
+        config.computer_use.max_coordinate_x = Some(1);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     async fn browser_config_default_enabled() {
         let b = BrowserConfig::default();
         assert!(b.enabled);
         assert!(
-            !b.automation_enabled,
-            "full browser automation must be opt-in"
+            b.automation_enabled,
+            "full browser automation is on by default"
         );
         assert_eq!(b.allowed_domains, vec!["*".to_string()]);
         assert_eq!(b.backend, "agent_browser");
@@ -37174,7 +37570,7 @@ default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
         assert!(parsed.browser.enabled);
-        assert!(!parsed.browser.automation_enabled);
+        assert!(parsed.browser.automation_enabled);
         assert_eq!(parsed.browser.allowed_domains, vec!["*".to_string()]);
     }
 
@@ -37182,7 +37578,7 @@ default_temperature = 0.7
     /// `browser_open` but NOT full automation. Operators must add
     /// `automation_enabled = true` themselves.
     #[test]
-    async fn browser_automation_stays_off_for_pre_split_configs() {
+    async fn browser_automation_defaults_on_when_unset() {
         let raw = r#"
 workspace_dir = "/tmp/ws"
 config_path = "/tmp/config.toml"
@@ -37195,8 +37591,8 @@ allowed_domains = ["example.com"]
         let parsed = parse_test_config(raw);
         assert!(parsed.browser.enabled);
         assert!(
-            !parsed.browser.automation_enabled,
-            "`enabled = true` alone must not re-grant full browser automation"
+            parsed.browser.automation_enabled,
+            "full browser automation is on unless the config turns it off"
         );
     }
 

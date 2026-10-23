@@ -32,6 +32,15 @@ pub(crate) async fn record_executed_outcomes(
         // batches interleave call->result per tool. Post-exec only records the
         // outcome to history, logs, hooks, and ordered_results.
 
+        let error_reason_for_audit = if outcome.audit_output.is_some() {
+            outcome
+                .error_reason
+                .as_ref()
+                .map(|_| "sensitive tool error omitted")
+        } else {
+            outcome.error_reason.as_deref()
+        };
+
         ::cubeq_log::record!(
             INFO,
             ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Complete)
@@ -46,8 +55,8 @@ pub(crate) async fn record_executed_outcomes(
                     "model": ctx.model,
                     "iteration": iteration + 1,
                     "tool": call.name.clone(),
-                    "error_reason": outcome.error_reason.as_deref().map(scrub_credentials),
-                    "output": scrub_credentials(&outcome.output),
+                    "error_reason": error_reason_for_audit.map(scrub_credentials),
+                    "output": scrub_credentials(outcome.output_for_audit()),
                     "trace_id": ctx.turn_id,
                 })),
             "tool_call_result"
@@ -58,7 +67,7 @@ pub(crate) async fn record_executed_outcomes(
             let hook_context = crate::hooks::tool_call_hook_context(ctx.turn_id, iteration, *idx);
             let tool_result_obj = crate::tools::ToolResult {
                 success: outcome.success,
-                output: outcome.output.clone().into(),
+                output: outcome.output_for_audit().into(),
                 error: None,
             };
             // The prepared arguments travel with the completion call so
@@ -104,9 +113,13 @@ pub(crate) async fn record_executed_outcomes(
                 &call.name,
                 &call.arguments,
                 outcome.success,
-                outcome.output.clone(),
-                outcome.output_data.clone(),
-                outcome.error_reason.as_deref(),
+                outcome.output_for_audit().to_string(),
+                if outcome.audit_output.is_some() {
+                    None
+                } else {
+                    outcome.output_data.clone()
+                },
+                error_reason_for_audit,
                 u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX),
             );
         }

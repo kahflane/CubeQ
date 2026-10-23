@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use cubeq_api::attribution::{Attributable, Role, ToolProvenance};
-use cubeq_api::tool::{Tool, ToolExecutionContext, ToolOutput, ToolResult};
+use cubeq_api::tool::{
+    ConfirmationRequirement, Tool, ToolExecutionContext, ToolOutput, ToolResult,
+};
 use cubeq_config::policy::SecurityPolicy;
 use std::sync::Arc;
 
@@ -58,6 +60,29 @@ impl<T: Tool> Tool for RateLimitedTool<T> {
 
     fn invocation_triggers(&self) -> Vec<String> {
         self.inner.invocation_triggers()
+    }
+
+    fn confirmation_requirement(&self, args: &serde_json::Value) -> ConfirmationRequirement {
+        self.inner.confirmation_requirement(args)
+    }
+
+    fn effective_confirmation_arguments(&self, args: &serde_json::Value) -> serde_json::Value {
+        self.inner.effective_confirmation_arguments(args)
+    }
+
+    fn output_sensitivity(
+        &self,
+        args: &serde_json::Value,
+    ) -> cubeq_api::tool::ToolOutputSensitivity {
+        self.inner.output_sensitivity(args)
+    }
+
+    fn audit_output(
+        &self,
+        args: &serde_json::Value,
+        result: &ToolResult,
+    ) -> Option<serde_json::Value> {
+        self.inner.audit_output(args, result)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -170,6 +195,29 @@ impl<T: Tool> Tool for PathGuardedTool<T> {
         self.inner.invocation_triggers()
     }
 
+    fn confirmation_requirement(&self, args: &serde_json::Value) -> ConfirmationRequirement {
+        self.inner.confirmation_requirement(args)
+    }
+
+    fn effective_confirmation_arguments(&self, args: &serde_json::Value) -> serde_json::Value {
+        self.inner.effective_confirmation_arguments(args)
+    }
+
+    fn output_sensitivity(
+        &self,
+        args: &serde_json::Value,
+    ) -> cubeq_api::tool::ToolOutputSensitivity {
+        self.inner.output_sensitivity(args)
+    }
+
+    fn audit_output(
+        &self,
+        args: &serde_json::Value,
+        result: &ToolResult,
+    ) -> Option<serde_json::Value> {
+        self.inner.audit_output(args, result)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.execute_with_context(args, &ToolExecutionContext::current().unwrap_or_default())
             .await
@@ -275,6 +323,33 @@ mod tests {
                 output: "ok".into(),
                 error: None,
             })
+        }
+    }
+
+    struct FreshTool;
+
+    cubeq_api::mock_tool_attribution!(FreshTool);
+
+    #[async_trait]
+    impl Tool for FreshTool {
+        fn name(&self) -> &str {
+            "fresh"
+        }
+
+        fn description(&self) -> &str {
+            "fresh"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        fn confirmation_requirement(&self, _args: &serde_json::Value) -> ConfirmationRequirement {
+            ConfirmationRequirement::Fresh
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::ok("ok"))
         }
     }
 
@@ -599,6 +674,17 @@ mod tests {
             .unwrap();
         assert!(!blocked.success);
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn composed_wrappers_delegate_fresh_confirmation() {
+        let sec = policy(AutonomyLevel::Full);
+        let tool = RateLimitedTool::new(PathGuardedTool::new(FreshTool, sec.clone()), sec);
+
+        assert_eq!(
+            tool.confirmation_requirement(&serde_json::json!({"action": "mutate"})),
+            ConfirmationRequirement::Fresh
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,9 @@ use anyhow::Context;
 use async_trait::async_trait;
 use base64::Engine;
 use cubeq_api::media::{MarkerKind, RenderedMarker};
-use cubeq_api::tool::{Tool, ToolOutput, ToolResult};
+use cubeq_api::tool::{
+    ConfirmationRequirement, Tool, ToolOutput, ToolOutputSensitivity, ToolResult,
+};
 use cubeq_config::policy::SecurityPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1132,6 +1134,7 @@ impl BrowserTool {
         // Remove path from params - we'll handle the write locally after validation
         params.remove("path");
         params.remove("action");
+        params.remove("approved");
 
         self.validate_computer_use_action(action, &params)?;
 
@@ -1523,7 +1526,44 @@ impl Tool for BrowserTool {
         })
     }
 
+    fn confirmation_requirement(&self, args: &Value) -> ConfirmationRequirement {
+        let Some(action) = args.get("action").and_then(Value::as_str) else {
+            return ConfirmationRequirement::Policy;
+        };
+
+        if matches!(
+            self.configured_backend(),
+            Ok(BrowserBackendKind::ComputerUse | BrowserBackendKind::Auto)
+        ) && browser_computer_use_requires_fresh_confirmation(action)
+        {
+            ConfirmationRequirement::Fresh
+        } else {
+            ConfirmationRequirement::Policy
+        }
+    }
+
+    fn output_sensitivity(&self, args: &Value) -> ToolOutputSensitivity {
+        match args.get("action").and_then(Value::as_str) {
+            Some("snapshot" | "get_text" | "screenshot" | "screen_capture") => {
+                ToolOutputSensitivity::Sensitive
+            }
+            _ => ToolOutputSensitivity::Ordinary,
+        }
+    }
+
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        if self.confirmation_requirement(&args) == ConfirmationRequirement::Fresh
+            && args.get("approved").and_then(Value::as_bool) != Some(true)
+        {
+            return Ok(ToolResult {
+                success: false,
+                output: ToolOutput::default(),
+                error: Some(crate::i18n::get_required_tool_string(
+                    "tool-browser-error-fresh-confirmation-required",
+                )),
+            });
+        }
+
         // Security checks
         if !self.security.can_act() {
             return Ok(ToolResult {
@@ -2679,6 +2719,17 @@ fn is_computer_use_only_action(action: &str) -> bool {
     )
 }
 
+/// Canonical risk classification for the legacy browser computer-use backend.
+/// Unknown and newly added actions fail closed; only these semantic reads use
+/// ordinary policy. Screen capture remains Fresh because it can expose the
+/// whole desktop rather than only allowlisted browser content.
+fn browser_computer_use_requires_fresh_confirmation(action: &str) -> bool {
+    !matches!(
+        action,
+        "snapshot" | "get_text" | "get_title" | "get_url" | "wait" | "is_visible"
+    )
+}
+
 fn backend_name(backend: ResolvedBackend) -> &'static str {
     match backend {
         ResolvedBackend::AgentBrowser => "agent_browser",
@@ -3084,6 +3135,85 @@ mod tests {
         assert!(is_computer_use_only_action("screen_capture"));
         assert!(!is_computer_use_only_action("open"));
         assert!(!is_computer_use_only_action("snapshot"));
+    }
+
+    #[test]
+    fn computer_use_backend_requires_fresh_confirmation_for_mutation() {
+        let tool = BrowserTool::new_with_backend(
+            Arc::new(SecurityPolicy::default()),
+            vec!["example.com".into()],
+            None,
+            "computer_use".into(),
+            None,
+            true,
+            "http://127.0.0.1:9515".into(),
+            None,
+            ComputerUseConfig::default(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tool.confirmation_requirement(&json!({"action": "mouse_click", "x": 1, "y": 2})),
+            ConfirmationRequirement::Fresh
+        );
+        assert_eq!(
+            tool.confirmation_requirement(&json!({"action": "click", "selector": "#save"})),
+            ConfirmationRequirement::Fresh
+        );
+        assert_eq!(
+            tool.confirmation_requirement(&json!({"action": "get_title"})),
+            ConfirmationRequirement::Policy
+        );
+        assert_eq!(
+            tool.confirmation_requirement(&json!({"action": "screen_capture"})),
+            ConfirmationRequirement::Fresh
+        );
+        assert_eq!(
+            tool.confirmation_requirement(&json!({"action": "future_action"})),
+            ConfirmationRequirement::Fresh
+        );
+        assert_eq!(
+            tool.output_sensitivity(&json!({"action": "screen_capture"})),
+            ToolOutputSensitivity::Sensitive
+        );
+        assert_eq!(
+            tool.output_sensitivity(&json!({"action": "snapshot"})),
+            ToolOutputSensitivity::Sensitive
+        );
+        assert_eq!(
+            tool.output_sensitivity(&json!({"action": "mouse_click"})),
+            ToolOutputSensitivity::Ordinary
+        );
+    }
+
+    #[tokio::test]
+    async fn computer_use_browser_action_rejects_untrusted_approved_argument() {
+        let tool = BrowserTool::new_with_backend(
+            Arc::new(SecurityPolicy::default()),
+            vec!["example.com".into()],
+            None,
+            "computer_use".into(),
+            None,
+            true,
+            "http://127.0.0.1:9515".into(),
+            None,
+            ComputerUseConfig::default(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        let result = tool
+            .execute(json!({"action": "mouse_click", "x": 1, "y": 2}))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("confirmation"))
+        );
     }
 
     #[test]
@@ -4187,6 +4317,7 @@ mod tests {
 
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": "../etc/passwd"
         });
 
@@ -4250,6 +4381,7 @@ mod tests {
 
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": config_path.to_string_lossy().to_string()
         });
 
@@ -4318,6 +4450,7 @@ mod tests {
 
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": "page.png"
         });
 
@@ -4391,6 +4524,7 @@ mod tests {
         // Use absolute path to the created file
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": page_path.to_string_lossy().to_string()
         });
 
@@ -4483,6 +4617,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "screenshot",
+                "approved": true,
                 "path": "screenshot.png"
             }))
             .await
@@ -4638,6 +4773,7 @@ mod tests {
             let result = tool
                 .execute(json!({
                     "action": "screenshot",
+                    "approved": true,
                     "path": "shot.png"
                 }))
                 .await;
@@ -4705,6 +4841,7 @@ mod tests {
         // Integer path - should fail before reaching sidecar
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": 12345
         });
         // Validation happens in execute_computer_use_action, returns ToolResult with error
@@ -4720,6 +4857,7 @@ mod tests {
         // Array path
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": ["path1", "path2"]
         });
         let result = tool.execute(args).await.unwrap();
@@ -4734,6 +4872,7 @@ mod tests {
         // Object path
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": {"key": "value"}
         });
         let result = tool.execute(args).await.unwrap();
@@ -4771,6 +4910,7 @@ mod tests {
         // Empty string path → inline PNG, no local write
         let args = json!({
             "action": "screenshot",
+            "approved": true,
             "path": ""
         });
 

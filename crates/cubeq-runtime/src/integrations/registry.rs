@@ -392,11 +392,10 @@ mod tests {
 
     #[test]
     fn browser_active_in_default_config() {
-        // BrowserConfig::default() has enabled=true, so `browser_open` is
-        // registered and the toggle is Active in the unconfigured registry
-        // even though full automation is off.
+        // BrowserConfig::default() turns on both `browser_open` and full
+        // automation, so the toggle is Active in the unconfigured registry.
         let config = Config::default();
-        assert!(config.browser.enabled && !config.browser.automation_enabled);
+        assert!(config.browser.enabled && config.browser.automation_enabled);
         assert!(matches!(
             toggle_status(&config, |n| n == "Browser"),
             IntegrationStatus::Active

@@ -52,7 +52,7 @@ cli-config-schema-about = Dump the full configuration JSON Schema to stdout
 cli-config-list-about = List all config properties with current values
 cli-config-get-about = Get a config property value
 cli-config-set-about = Set a config property (secret fields auto-prompt for masked input)
-cli-config-init-about = Initialize unconfigured sections with defaults (enabled=false)
+cli-config-init-about = Initialize unconfigured sections with their defaults
 cli-config-migrate-about = Migrate config.toml to the current schema version on disk (preserves comments)
 
 cli-service-install-about = Install daemon service unit for auto-start and restart
@@ -624,7 +624,6 @@ cli-quickstart-needs-tty = Quickstart is interactive and needs a terminal on std
 cli-quickstart-terminal-size-unknown = Quickstart could not determine the terminal size, so it cannot verify the checklist fits. Run it from a terminal that reports its dimensions, or use `cubeq config set <path> <value>` for headless configuration.
 cli-quickstart-terminal-too-narrow = Quickstart needs a terminal at least {$min_width} columns wide; the current terminal is {$width} columns. Widen the terminal and try again.
 cli-quickstart-terminal-too-short = Quickstart needs a terminal at least {$min_height} rows tall; the current terminal is {$height} rows. Make the terminal taller and try again.
-cli-quickstart-terminal-resized = The terminal changed from {$initial_width}x{$initial_height} to {$current_width}x{$current_height} while the Quickstart checklist was open. Reopen the checklist to continue.
 cli-quickstart-empty-checklist = Quickstart cannot open an empty checklist.
 cli-quickstart-cancelled = Quickstart cancelled. No config written.
 cli-quickstart-incomplete = {"  "}Not all selectors are filled yet.
@@ -878,6 +877,9 @@ cli-security-status-agent-enabled = Agent enabled: {$enabled}
 cli-security-status-risk-profile = Risk profile: {$v}
 cli-security-status-autonomy = Autonomy:   {$v}
 cli-security-status-approvals = Approvals:  medium-risk approval required: {$medium}, high-risk commands blocked: {$high}
+cli-fresh-confirmation-single-call = Tool '{$tool}' requires fresh confirmation and must be issued alone so approval immediately precedes execution.
+cli-fresh-confirmation-unsafe-arguments = Fresh-confirmation arguments could not be shown completely and unambiguously, or contain control, bidi, or invisible formatting characters; the call was rejected before prompting.
+cli-fresh-confirmation-busy = Another freshly confirmed action is awaiting approval or execution. Retry after it finishes so this call can be reviewed against current state.
 cli-security-status-sandbox = Sandbox:    requested {$requested}, active {$active} ({$description})
 cli-security-status-sandbox-description-docker-runtime = Docker runtime container isolation (runtime.kind = "docker"; no additional sandbox wrapper)
 cli-security-status-sandbox-description-firejail-args-rejected = Firejail selected, but firejail_args were rejected; commands are blocked ({$reason})
@@ -1226,6 +1228,7 @@ history-trim-floor-exceeds-budget = system prompt and tool definitions ({$floor}
 # (phase 1); becomes live when non-`Loop` policy is configured (phase 3).
 turn-ingress-dropped = This request was not processed: { $reason }
 turn-tool-interrupted-before-result = [interrupted by user before this tool produced a result]
+turn-fresh-tool-interrupted-outcome-unknown = [freshly approved action was interrupted; its outcome may be unknown—inspect current state before requesting any retry]
 # Safe reply delivered when the model repeatedly emits malformed internal
 # tool-call protocol and the turn gives up retrying.
 channel-runtime-malformed-tool-output = I generated an internal tool-call format error and could not complete this request. Please try again.

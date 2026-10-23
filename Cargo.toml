@@ -269,6 +269,9 @@ arm-unknown-linux-gnueabihf = ["observability-prometheus", "plugins-wasm-craneli
 armv7-unknown-linux-gnueabihf = ["observability-prometheus", "plugins-wasm-cranelift"]
 
 [features]
+# Every feature that builds without extra source trees is on by default.
+# Left out: `embedded-web` (needs a web dashboard build), `dev-sim` (a
+# development simulator) and the alternative WASM engines.
 default = [
     "agent-runtime",
     "default-channels",
@@ -276,6 +279,8 @@ default = [
     "gateway",
     "observability-prometheus",
     "schema-export",
+    "ci-all",
+    "voice-wake",
 ]
 
 # The core agent runtime — agent loop, tools, persistence subsystems.
@@ -419,6 +424,7 @@ dev-sim = ["dep:cubeq-hardware", "cubeq-hardware/dev-sim"]
 sandbox-landlock = ["cubeq-runtime/sandbox-landlock"]
 sandbox-bubblewrap = ["cubeq-runtime/sandbox-bubblewrap"]
 browser-native = ["tools-external", "cubeq-tools/browser-native"]
+computer-use = ["agent-runtime", "tools-external", "cubeq-runtime/computer-use"]
 plugins-wasm = [
     "dep:cubeq-plugins",
     "dep:semver",
@@ -479,7 +485,7 @@ ci-all = [
     "observability-prometheus", "observability-otel",
     "hardware", "peripheral-rpi",
     "sandbox-landlock", "sandbox-bubblewrap",
-    "browser-native", "probe",
+    "browser-native", "computer-use", "probe",
     "plugins-wasm", "plugins-wasm-cranelift",
     "webauthn", "memory-postgres",
     "tools-saas", "tools-coding-cli", "tools-external",

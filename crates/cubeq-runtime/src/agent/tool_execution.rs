@@ -10,7 +10,10 @@ use crate::observability::{Observer, ObserverEvent};
 use crate::tools::{ActivatedToolSet, Tool};
 use cubeq_api::agent::{ToolArtifact, TurnEvent};
 use cubeq_api::attribution::Attributable;
-use cubeq_api::tool::{ToolExecutionCancelled, ToolExecutionContext};
+use cubeq_api::tool::{
+    ConfirmationRequirement, ToolConfirmation, ToolExecutionCancelled, ToolExecutionContext,
+    ToolOutputSensitivity,
+};
 use tokio::sync::mpsc::Sender;
 
 // Items that still live in `loop_` — import via the parent module.
@@ -63,6 +66,58 @@ pub(crate) fn resolved_tool_provenance(
         })
 }
 
+fn find_activated_tool(
+    activated_tools: Option<&std::sync::Arc<std::sync::Mutex<ActivatedToolSet>>>,
+    name: &str,
+) -> Option<std::sync::Arc<dyn Tool>> {
+    let activated_tools = activated_tools?;
+    let guard = match activated_tools.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            ::cubeq_log::record!(
+                WARN,
+                ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Note)
+                    .with_category(::cubeq_log::EventCategory::Tool)
+                    .with_outcome(::cubeq_log::EventOutcome::Unknown)
+                    .with_attrs(::serde_json::json!({
+                        "error_key": "tool.activated_tool_lock_poisoned",
+                        "tool": name,
+                    })),
+                "activated-tool lock poisoned while resolving tool; recovering guard for read"
+            );
+            poisoned.into_inner()
+        }
+    };
+    guard.get_resolved(name)
+}
+
+pub(crate) fn confirmation_requirement_for_call(
+    tools_registry: &[Box<dyn Tool>],
+    activated_tools: Option<&std::sync::Arc<std::sync::Mutex<ActivatedToolSet>>>,
+    name: &str,
+    args: &serde_json::Value,
+) -> ConfirmationRequirement {
+    confirmation_for_call(tools_registry, activated_tools, name, args).requirement
+}
+
+pub(crate) fn confirmation_for_call(
+    tools_registry: &[Box<dyn Tool>],
+    activated_tools: Option<&std::sync::Arc<std::sync::Mutex<ActivatedToolSet>>>,
+    name: &str,
+    args: &serde_json::Value,
+) -> ToolConfirmation {
+    if let Some(tool) = find_tool(tools_registry, name) {
+        return tool.confirmation(args);
+    }
+    find_activated_tool(activated_tools, name).map_or_else(
+        || ToolConfirmation {
+            requirement: ConfirmationRequirement::Policy,
+            effective_arguments: args.clone(),
+        },
+        |tool| tool.confirmation(args),
+    )
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ToolDispatchContext<'a> {
     pub tools_registry: &'a [Box<dyn Tool>],
@@ -101,6 +156,7 @@ fn unavailable_tool_outcome(
     });
     ToolExecutionOutcome {
         output: reason.clone(),
+        audit_output: None,
         success: false,
         error_reason: Some(reason),
         duration,
@@ -122,6 +178,10 @@ pub struct ToolExecutionOutcome {
     /// They reach history through the carrier grammar and are never recovered
     /// by scanning `output`.
     pub attachments: Vec<cubeq_api::media::RenderedMarker>,
+    /// Per-call materialized audit view. `None` means the ordinary output is
+    /// safe to record; `Some` must replace it on persistence/observability
+    /// surfaces while `output` continues on the model/user data path.
+    pub audit_output: Option<String>,
     /// Structured output when the tool declared one (`ToolOutput::data`).
     /// Feeds SOP step capture and data-flow surfaces; the LLM sees only
     /// `output`. Stored raw — consumers scrub at their own rendering boundary.
@@ -137,6 +197,29 @@ pub struct ToolExecutionOutcome {
     /// Cryptographic HMAC receipt proving this tool actually executed.
     /// Present only when tool receipts are enabled in config.
     pub receipt: Option<String>,
+}
+
+impl ToolExecutionOutcome {
+    pub(crate) fn output_for_audit(&self) -> &str {
+        self.audit_output.as_deref().unwrap_or(&self.output)
+    }
+}
+
+fn sensitive_audit_output(
+    tool: &dyn Tool,
+    args: &serde_json::Value,
+    result: &crate::tools::ToolResult,
+) -> String {
+    const OMITTED: &str = r#"{"sensitive_output":"omitted"}"#;
+    let Some(metadata) = tool.audit_output(args, result) else {
+        return OMITTED.to_string();
+    };
+    let rendered = metadata.to_string();
+    if rendered.chars().count() <= cubeq_api::tool::MAX_TOOL_AUDIT_OUTPUT_CHARS {
+        rendered
+    } else {
+        OMITTED.to_string()
+    }
 }
 
 // ── Single tool execution ────────────────────────────────────────────────
@@ -178,29 +261,7 @@ pub(crate) async fn execute_one_tool(
 
     let static_tool = find_tool(dispatch.tools_registry, call_name);
     let activated_arc = if static_tool.is_none() {
-        match dispatch.activated_tools {
-            Some(at) => {
-                let activated_tools = match at.lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => {
-                        ::cubeq_log::record!(
-                            WARN,
-                            ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Note)
-                                .with_category(::cubeq_log::EventCategory::Tool)
-                                .with_outcome(::cubeq_log::EventOutcome::Unknown)
-                                .with_attrs(::serde_json::json!({
-                                    "tool": call_name,
-                                    "tool_call_id": tool_call_id,
-                                })),
-                            "activated-tool lock poisoned while resolving tool; recovering guard for read"
-                        );
-                        poisoned.into_inner()
-                    }
-                };
-                activated_tools.get_resolved(call_name)
-            }
-            None => None,
-        }
+        find_activated_tool(dispatch.activated_tools, call_name)
     } else {
         None
     };
@@ -221,6 +282,7 @@ pub(crate) async fn execute_one_tool(
         });
         return Ok(ToolExecutionOutcome {
             output: reason.clone(),
+            audit_output: None,
             success: false,
             error_reason: Some(reason),
             duration,
@@ -229,6 +291,7 @@ pub(crate) async fn execute_one_tool(
             attachments: Vec::new(),
         });
     };
+    let output_sensitivity = tool.output_sensitivity(&call_arguments);
 
     if is_excluded_tool(tool.name(), dispatch.excluded_tools) {
         return Ok(unavailable_tool_outcome(
@@ -304,6 +367,10 @@ pub(crate) async fn execute_one_tool(
         match tool_result {
             Ok(r) => {
                 let duration = start.elapsed();
+                let audit_output = (output_sensitivity == ToolOutputSensitivity::Sensitive)
+                    .then(|| sensitive_audit_output(tool, &call_arguments, &r));
+                let rendered_output_for_audit =
+                    audit_output.as_deref().unwrap_or(r.output.as_str());
                 if r.success {
                     ::cubeq_log::record!(
                         DEBUG,
@@ -315,7 +382,7 @@ pub(crate) async fn execute_one_tool(
                                 "tool": call_name,
                                 "tool_call_id": tool_call_id,
                                 "input": call_arguments,
-                                "output": r.output,
+                                "output": rendered_output_for_audit,
                             })),
                         format!("tool result: {call_name}")
                     );
@@ -330,8 +397,12 @@ pub(crate) async fn execute_one_tool(
                                 "tool": call_name,
                                 "tool_call_id": tool_call_id,
                                 "input": call_arguments,
-                                "error": r.error.clone().unwrap_or_default(),
-                                "output": r.output,
+                                "error": if output_sensitivity == ToolOutputSensitivity::Sensitive {
+                                    "sensitive tool error omitted".to_string()
+                                } else {
+                                    r.error.clone().unwrap_or_default()
+                                },
+                                "output": rendered_output_for_audit,
                             })),
                         format!("tool failed: {call_name}")
                     );
@@ -343,7 +414,11 @@ pub(crate) async fn execute_one_tool(
                         &r.output
                     };
                     let receipt = receipt_generator.map(|receipt_gen| {
-                        receipt_gen.generate_now(call_name, &call_arguments, normalized_output)
+                        receipt_gen.generate_now(
+                            call_name,
+                            &call_arguments,
+                            audit_output.as_deref().unwrap_or(normalized_output),
+                        )
                     });
                     observer.record_event(&ObserverEvent::ToolCall {
                         tool: call_name.to_string(),
@@ -351,7 +426,9 @@ pub(crate) async fn execute_one_tool(
                         duration,
                         success: true,
                         arguments: Some(full_args.clone()),
-                        result: Some(scrub_credentials(normalized_output)),
+                        result: Some(scrub_credentials(
+                            audit_output.as_deref().unwrap_or(normalized_output),
+                        )),
                         channel: Some(meta.channel_name.to_string()),
                         agent_alias: meta.agent_alias.map(|s| s.to_string()),
                         parent_agent_alias: meta.parent_agent_alias.map(|s| s.to_string()),
@@ -360,6 +437,7 @@ pub(crate) async fn execute_one_tool(
                     Ok(ToolExecutionOutcome {
                         output: normalized_output.to_string(),
                         attachments: r.output.attachments().to_vec(),
+                        audit_output,
                         output_data: r.output.into_data(),
                         success: true,
                         error_reason: None,
@@ -396,13 +474,23 @@ pub(crate) async fn execute_one_tool(
                     // data-flow surfaces) that scrub at their own rendering
                     // boundary.
                     let model_visible = scrub_credentials(&full_output);
+                    let reason_for_audit = if output_sensitivity == ToolOutputSensitivity::Sensitive
+                    {
+                        scrub_credentials(
+                            audit_output
+                                .as_deref()
+                                .unwrap_or("sensitive tool error omitted"),
+                        )
+                    } else {
+                        model_visible.clone()
+                    };
                     observer.record_event(&ObserverEvent::ToolCall {
                         tool: call_name.to_string(),
                         tool_call_id: tool_call_id_owned.clone(),
                         duration,
                         success: false,
                         arguments: Some(full_args.clone()),
-                        result: Some(model_visible.clone()),
+                        result: Some(reason_for_audit),
                         channel: Some(meta.channel_name.to_string()),
                         agent_alias: meta.agent_alias.map(|s| s.to_string()),
                         parent_agent_alias: meta.parent_agent_alias.map(|s| s.to_string()),
@@ -410,6 +498,7 @@ pub(crate) async fn execute_one_tool(
                     });
                     Ok(ToolExecutionOutcome {
                         output: format!("Error: {model_visible}"),
+                        audit_output,
                         success: false,
                         error_reason: Some(reason),
                         duration,
@@ -421,6 +510,11 @@ pub(crate) async fn execute_one_tool(
             }
             Err(e) => {
                 let duration = start.elapsed();
+                let error_for_audit = if output_sensitivity == ToolOutputSensitivity::Sensitive {
+                    "sensitive tool error omitted".to_string()
+                } else {
+                    format!("{e:?}")
+                };
                 ::cubeq_log::record!(
                     ERROR,
                     ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Fail)
@@ -431,7 +525,7 @@ pub(crate) async fn execute_one_tool(
                             "tool": call_name,
                             "tool_call_id": tool_call_id,
                             "input": call_arguments,
-                            "error": format!("{e:?}"),
+                            "error": error_for_audit,
                         })),
                     format!("tool error: {call_name}")
                 );
@@ -448,7 +542,11 @@ pub(crate) async fn execute_one_tool(
                     duration,
                     success: false,
                     arguments: Some(full_args.clone()),
-                    result: Some(model_visible.clone()),
+                    result: Some(if output_sensitivity == ToolOutputSensitivity::Sensitive {
+                        "sensitive tool error omitted".to_string()
+                    } else {
+                        model_visible.clone()
+                    }),
                     channel: Some(meta.channel_name.to_string()),
                     agent_alias: meta.agent_alias.map(|s| s.to_string()),
                     parent_agent_alias: meta.parent_agent_alias.map(|s| s.to_string()),
@@ -456,6 +554,8 @@ pub(crate) async fn execute_one_tool(
                 });
                 Ok(ToolExecutionOutcome {
                     output: model_visible,
+                    audit_output: (output_sensitivity == ToolOutputSensitivity::Sensitive)
+                        .then(|| "sensitive tool error omitted".to_string()),
                     success: false,
                     error_reason: Some(reason),
                     duration,
@@ -502,6 +602,15 @@ pub fn should_execute_tools_in_parallel(
     tool_calls: &[ParsedToolCall],
     approval: Option<&ApprovalManager>,
 ) -> bool {
+    should_execute_tools_in_parallel_with_registry(tool_calls, approval, &[], None)
+}
+
+pub(crate) fn should_execute_tools_in_parallel_with_registry(
+    tool_calls: &[ParsedToolCall],
+    approval: Option<&ApprovalManager>,
+    tools_registry: &[Box<dyn Tool>],
+    activated_tools: Option<&std::sync::Arc<std::sync::Mutex<ActivatedToolSet>>>,
+) -> bool {
     if tool_calls.len() <= 1 {
         return false;
     }
@@ -530,6 +639,26 @@ pub fn should_execute_tools_in_parallel(
         .filter(|call| matches!(call.name.as_str(), "file_edit" | "file_write"))
         .count();
     if file_edit_count > 0 && file_mutation_count > 1 {
+        return false;
+    }
+
+    // Desktop input is process-global and ordered even when session policy
+    // removes per-action prompts. Parallel calls would race the native driver
+    // and make the second call fail its exclusive-action guard.
+    if tool_calls.iter().any(|call| call.name == "computer_use") {
+        return false;
+    }
+
+    if tool_calls.iter().any(|call| {
+        confirmation_requirement_for_call(
+            tools_registry,
+            activated_tools,
+            &call.name,
+            &call.arguments,
+        ) == ConfirmationRequirement::Fresh
+    }) {
+        // Fresh confirmation is action-sensitive and per execution. Keep its
+        // dispatch ordered even after the operator approves the call.
         return false;
     }
 
@@ -662,7 +791,9 @@ mod tests {
     use crate::tools::ActivatedToolSet;
     use anyhow::Result;
     use async_trait::async_trait;
-    use cubeq_api::tool::{Tool, ToolExecutionContext};
+    use cubeq_api::tool::{
+        ConfirmationRequirement, Tool, ToolExecutionContext, ToolOutputSensitivity,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -739,6 +870,126 @@ mod tests {
                 error: None,
             })
         }
+    }
+
+    struct FreshTool;
+
+    impl cubeq_api::attribution::Attributable for FreshTool {
+        fn role(&self) -> cubeq_api::attribution::Role {
+            cubeq_api::attribution::Role::System
+        }
+
+        fn alias(&self) -> &str {
+            "fresh-tool"
+        }
+    }
+
+    #[async_trait]
+    impl Tool for FreshTool {
+        fn name(&self) -> &str {
+            "fresh_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Requires fresh confirmation"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn confirmation_requirement(&self, _args: &serde_json::Value) -> ConfirmationRequirement {
+            ConfirmationRequirement::Fresh
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+        ) -> anyhow::Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult::ok("ok"))
+        }
+    }
+
+    struct SensitiveTool;
+
+    impl cubeq_api::attribution::Attributable for SensitiveTool {
+        fn role(&self) -> cubeq_api::attribution::Role {
+            cubeq_api::attribution::Role::System
+        }
+
+        fn alias(&self) -> &str {
+            "sensitive-tool"
+        }
+    }
+
+    #[async_trait]
+    impl Tool for SensitiveTool {
+        fn name(&self) -> &str {
+            "sensitive_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Returns sensitive test content"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn output_sensitivity(&self, _args: &serde_json::Value) -> ToolOutputSensitivity {
+            ToolOutputSensitivity::Sensitive
+        }
+
+        fn audit_output(
+            &self,
+            _args: &serde_json::Value,
+            _result: &crate::tools::ToolResult,
+        ) -> Option<serde_json::Value> {
+            Some(serde_json::json!({"node_count": 1, "content": "omitted"}))
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+        ) -> anyhow::Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult::ok("private document body"))
+        }
+    }
+
+    #[tokio::test]
+    async fn sensitive_output_keeps_data_path_and_materializes_bounded_audit_view() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(SensitiveTool)];
+        let meta = crate::agent::turn::TurnMeta {
+            agent_alias: None,
+            parent_agent_alias: None,
+            turn_id: "test-turn-id",
+            channel_name: "test",
+        };
+        let outcome = execute_one_tool(
+            "sensitive_tool",
+            serde_json::json!({}),
+            Some("call-sensitive"),
+            ToolDispatchContext {
+                tools_registry: &tools,
+                activated_tools: None,
+                excluded_tools: &[],
+                model_switch_callback: None,
+            },
+            &meta,
+            &NoopObserver,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("sensitive tool executes");
+
+        assert_eq!(outcome.output, "private document body");
+        assert_eq!(
+            outcome.output_for_audit(),
+            r#"{"content":"omitted","node_count":1}"#
+        );
+        assert!(!outcome.output_for_audit().contains("private document"));
     }
 
     #[tokio::test]
@@ -1034,6 +1285,19 @@ mod tests {
                 error: Some("HTTP 400".into()),
             })
         }
+    }
+
+    #[test]
+    fn computer_use_in_batch_forces_serial_without_approval_prompt() {
+        let calls = vec![
+            parsed_tool_call("computer_use"),
+            parsed_tool_call("file_read"),
+        ];
+
+        assert!(
+            !should_execute_tools_in_parallel(&calls, None),
+            "desktop input must stay ordered even when session policy removes prompts"
+        );
     }
 
     /// Fake tool that fails with only `error` set and empty `output` — the
@@ -2520,6 +2784,49 @@ mod tests {
             should_execute_tools_in_parallel(&batch, None),
             "no approval manager + non-tool_search batch must run in parallel"
         );
+    }
+
+    #[test]
+    fn fresh_confirmation_in_batch_forces_sequential_dispatch() {
+        let batch = vec![
+            parsed_tool_call("file_read"),
+            parsed_tool_call("fresh_tool"),
+        ];
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(FreshTool)];
+
+        assert!(
+            !super::should_execute_tools_in_parallel_with_registry(&batch, None, &tools, None),
+            "fresh confirmation must force serial dispatch even without a policy approval gate"
+        );
+    }
+
+    #[test]
+    fn activated_fresh_confirmation_is_not_treated_as_policy_default() {
+        let batch = vec![
+            parsed_tool_call("file_read"),
+            parsed_tool_call("fresh_tool"),
+        ];
+        let activated = Arc::new(Mutex::new(ActivatedToolSet::new()));
+        activated
+            .lock()
+            .expect("activated set")
+            .activate("fresh_tool".into(), Arc::new(FreshTool));
+
+        assert_eq!(
+            super::confirmation_requirement_for_call(
+                &[],
+                Some(&activated),
+                "fresh_tool",
+                &serde_json::json!({}),
+            ),
+            ConfirmationRequirement::Fresh
+        );
+        assert!(!super::should_execute_tools_in_parallel_with_registry(
+            &batch,
+            None,
+            &[],
+            Some(&activated),
+        ));
     }
 
     // ── Plan emission tests ────────────────────────────────────────────────

@@ -19,12 +19,19 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+static FRESH_CONFIRMATION_EXECUTION_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 pub(crate) struct PreparedToolCalls {
     pub(crate) ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>>,
     pub(crate) executable_indices: Vec<usize>,
     pub(crate) executable_calls: Vec<ParsedToolCall>,
     /// Per-call immutable snapshot for draft start/completion events.
     pub(crate) stream_calls: Vec<Option<StreamToolCall>>,
+    /// Process-wide lease acquired before a Fresh prompt and retained until
+    /// the approved call finishes. This closes approval-to-execution races
+    /// between concurrent turns and between different Fresh tools.
+    pub(crate) fresh_confirmation_guard: Option<tokio::sync::MutexGuard<'static, ()>>,
 }
 
 /// Per-call draft metadata retained only until the matching completion event.
@@ -45,14 +52,14 @@ fn tool_call_signature(tool_name: &str, tool_args: &serde_json::Value) -> (Strin
     (tool_name.trim().to_ascii_lowercase(), args_json)
 }
 
-async fn record_duplicate_tool_call(
+async fn record_rejected_tool_call(
     ctx: &TurnCtx<'_>,
     tool_name: &str,
     tool_args: &serde_json::Value,
     iteration: usize,
+    reason: String,
+    deduplicated: bool,
 ) -> ToolExecutionOutcome {
-    let duplicate =
-        format!("Skipped duplicate tool call '{tool_name}' with identical arguments in this turn.");
     ::cubeq_log::record!(
         INFO,
         ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Skip)
@@ -63,8 +70,8 @@ async fn record_duplicate_tool_call(
                 "iteration": iteration + 1,
                 "tool": tool_name,
                 "arguments": scrub_credentials(&tool_args.to_string()),
-                "result": duplicate,
-                "deduplicated": true,
+                "result": reason,
+                "deduplicated": deduplicated,
                 "trace_id": ctx.turn_id,
             })),
         "tool_call_result"
@@ -73,15 +80,16 @@ async fn record_duplicate_tool_call(
         let _ = tx
             .send(StreamDelta::Status(format!(
                 "\u{274c} {}: {}\n",
-                tool_name, duplicate
+                tool_name, reason
             )))
             .await;
     }
     ToolExecutionOutcome {
-        output: duplicate.clone(),
+        output: reason.clone(),
         attachments: Vec::new(),
+        audit_output: None,
         success: false,
-        error_reason: Some(duplicate),
+        error_reason: Some(reason),
         duration: Duration::ZERO,
         receipt: None,
         output_data: None,
@@ -142,6 +150,7 @@ pub(crate) async fn prepare_tool_calls(
     let mut executable_indices: Vec<usize> = Vec::new();
     let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
     let mut executable_stream_calls = Vec::new();
+    let mut fresh_confirmation_guard = None;
     let mut prompt_approval_tool_signatures_this_round: HashSet<(String, String)> = HashSet::new();
     // Contexts whose before phase ran and that are still awaiting a terminal
     // lifecycle operation (before hook continued, no cancel/deny/dedup yet).
@@ -197,6 +206,7 @@ pub(crate) async fn prepare_tool_calls(
                     let outcome = ToolExecutionOutcome {
                         output: cancelled,
                         attachments: Vec::new(),
+                        audit_output: None,
                         success: false,
                         error_reason: Some(reason),
                         duration: Duration::ZERO,
@@ -229,11 +239,103 @@ pub(crate) async fn prepare_tool_calls(
         );
 
         crate::agent::set_runtime_approved_arg(&tool_name, &mut tool_args, false);
+        crate::agent::set_computer_use_approval_context(&tool_name, &mut tool_args, None);
 
-        let requires_prompt = ctx
-            .approval
-            .map(|mgr| mgr.needs_approval(&tool_name))
-            .unwrap_or(false);
+        let confirmation = crate::agent::tool_execution::confirmation_for_call(
+            tools_registry,
+            activated_tools,
+            &tool_name,
+            &tool_args,
+        );
+        let confirmation_requirement = confirmation.requirement;
+        crate::agent::set_fresh_confirmation_approved_arg(
+            confirmation_requirement,
+            &mut tool_args,
+            false,
+        );
+        let confirmation_args = confirmation.effective_arguments;
+
+        if confirmation_requirement == cubeq_api::tool::ConfirmationRequirement::Fresh
+            && !crate::approval::confirmation_args_are_review_safe(&confirmation_args)
+        {
+            let rejected =
+                crate::i18n::get_required_cli_string("cli-fresh-confirmation-unsafe-arguments");
+            let outcome = record_rejected_tool_call(
+                ctx,
+                &tool_name,
+                &confirmation_args,
+                iteration,
+                rejected,
+                false,
+            )
+            .await;
+            abandon_prepared_context(ctx, &hook_context, &tool_name).await;
+            if let Some(tx) = ctx.event_tx {
+                emit_tool_call_pair(tx, call, &outcome).await;
+            }
+            ordered_results[idx] = Some((tool_name.clone(), call.tool_call_id.clone(), outcome));
+            continue;
+        }
+
+        if confirmation_requirement == cubeq_api::tool::ConfirmationRequirement::Fresh
+            && tool_calls.len() != 1
+        {
+            let rejected = crate::i18n::get_required_cli_string_with_args(
+                "cli-fresh-confirmation-single-call",
+                &[("tool", &tool_name)],
+            );
+            let outcome = record_rejected_tool_call(
+                ctx,
+                &tool_name,
+                &confirmation_args,
+                iteration,
+                rejected,
+                false,
+            )
+            .await;
+            abandon_prepared_context(ctx, &hook_context, &tool_name).await;
+            if let Some(tx) = ctx.event_tx {
+                emit_tool_call_pair(tx, call, &outcome).await;
+            }
+            ordered_results[idx] = Some((tool_name.clone(), call.tool_call_id.clone(), outcome));
+            continue;
+        }
+
+        let call_fresh_confirmation_guard =
+            if confirmation_requirement == cubeq_api::tool::ConfirmationRequirement::Fresh {
+                match FRESH_CONFIRMATION_EXECUTION_LOCK.try_lock() {
+                    Ok(guard) => Some(guard),
+                    Err(_) => {
+                        let rejected =
+                            crate::i18n::get_required_cli_string("cli-fresh-confirmation-busy");
+                        let outcome = record_rejected_tool_call(
+                            ctx,
+                            &tool_name,
+                            &confirmation_args,
+                            iteration,
+                            rejected,
+                            false,
+                        )
+                        .await;
+                        abandon_prepared_context(ctx, &hook_context, &tool_name).await;
+                        if let Some(tx) = ctx.event_tx {
+                            emit_tool_call_pair(tx, call, &outcome).await;
+                        }
+                        ordered_results[idx] =
+                            Some((tool_name.clone(), call.tool_call_id.clone(), outcome));
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+
+        let requires_prompt = confirmation_requirement
+            == cubeq_api::tool::ConfirmationRequirement::Fresh
+            || ctx
+                .approval
+                .map(|mgr| mgr.needs_approval(&tool_name))
+                .unwrap_or(false);
         let reentrant_agent_tool =
             crate::tools::REENTRANT_AGENT_TOOLS.contains(&tool_name.as_str());
         // Signature this call holds in the turn-scoped guard while its
@@ -244,8 +346,17 @@ pub(crate) async fn prepare_tool_calls(
             let prompt_signature = tool_call_signature(&tool_name, &tool_args);
             pending_prompt_signature = Some(prompt_signature.clone());
             if !prompt_approval_tool_signatures_this_round.insert(prompt_signature.clone()) {
-                let duplicate =
-                    record_duplicate_tool_call(ctx, &tool_name, &tool_args, iteration).await;
+                let duplicate = record_rejected_tool_call(
+                    ctx,
+                    &tool_name,
+                    &tool_args,
+                    iteration,
+                    format!(
+                        "Skipped duplicate tool call '{tool_name}' with identical arguments in this turn."
+                    ),
+                    true,
+                )
+                .await;
                 abandon_prepared_context(ctx, &hook_context, &tool_name).await;
                 ordered_results[idx] =
                     Some((tool_name.clone(), call.tool_call_id.clone(), duplicate));
@@ -298,33 +409,41 @@ pub(crate) async fn prepare_tool_calls(
             index: u32::try_from(idx + 1).unwrap_or(u32::MAX),
             total: u32::try_from(tool_calls.len()).unwrap_or(u32::MAX),
         };
-        let approved =
-            match gate_tool_approval(ctx, &tool_name, &tool_args, iteration, position).await {
-                ApprovalGateOutcome::Proceed { approved } => approved,
-                ApprovalGateOutcome::Deny(outcome) | ApprovalGateOutcome::Replace(outcome) => {
-                    // The before phase ran but this call will never execute:
-                    // its only terminal lifecycle operation is abandonment.
-                    abandon_prepared_context(ctx, &hook_context, &tool_name).await;
-                    // Streaming consumers see the denied/replaced call and its
-                    // synthesized result (e.g. a DenyWithEdit replacement) as a
-                    // ToolCall/ToolResult pair, as the direct path always did.
-                    if let Some(tx) = ctx.event_tx {
-                        emit_tool_call_pair(tx, call, &outcome).await;
-                    }
-                    ordered_results[idx] =
-                        Some((tool_name.clone(), call.tool_call_id.clone(), outcome));
-                    continue;
+        let approved = match gate_tool_approval(
+            ctx,
+            &tool_name,
+            &confirmation_args,
+            confirmation_requirement,
+            iteration,
+            position,
+        )
+        .await
+        {
+            ApprovalGateOutcome::Proceed { approved } => approved,
+            ApprovalGateOutcome::Deny(outcome) | ApprovalGateOutcome::Replace(outcome) => {
+                // The before phase ran but this call will never execute:
+                // its only terminal lifecycle operation is abandonment.
+                abandon_prepared_context(ctx, &hook_context, &tool_name).await;
+                // Streaming consumers see the denied/replaced call and its
+                // synthesized result (e.g. a DenyWithEdit replacement) as a
+                // ToolCall/ToolResult pair, as the direct path always did.
+                if let Some(tx) = ctx.event_tx {
+                    emit_tool_call_pair(tx, call, &outcome).await;
                 }
-                ApprovalGateOutcome::Cancelled => {
-                    // Preparation aborts before execution takes ownership of
-                    // the retained contexts or the call awaiting approval.
-                    for (retained_context, retained_tool) in &retained_hook_contexts {
-                        abandon_prepared_context(ctx, retained_context, retained_tool).await;
-                    }
-                    abandon_prepared_context(ctx, &hook_context, &tool_name).await;
-                    return Err(ToolLoopCancelled.into());
+                ordered_results[idx] =
+                    Some((tool_name.clone(), call.tool_call_id.clone(), outcome));
+                continue;
+            }
+            ApprovalGateOutcome::Cancelled => {
+                // Preparation aborts before execution takes ownership of
+                // the retained contexts or the call awaiting approval.
+                for (retained_context, retained_tool) in &retained_hook_contexts {
+                    abandon_prepared_context(ctx, retained_context, retained_tool).await;
                 }
-            };
+                abandon_prepared_context(ctx, &hook_context, &tool_name).await;
+                return Err(ToolLoopCancelled.into());
+            }
+        };
         // An approved call is not an approval loop: drop its signature from
         // the turn-scoped guard so a later identical call (a rerun the user
         // asked for, a re-check after an edit) gets a fresh approval prompt.
@@ -344,13 +463,43 @@ pub(crate) async fn prepare_tool_calls(
             &mut tool_args,
             runtime_command_approved,
         );
+        crate::agent::set_fresh_confirmation_approved_arg(
+            confirmation_requirement,
+            &mut tool_args,
+            approved,
+        );
+        let approval_context = approved.then(|| cubeq_api::tool::ApprovalContext {
+            provenance: match confirmation_requirement {
+                cubeq_api::tool::ConfirmationRequirement::Policy => {
+                    cubeq_api::tool::ApprovalProvenance::Policy
+                }
+                cubeq_api::tool::ConfirmationRequirement::Fresh => {
+                    cubeq_api::tool::ApprovalProvenance::Fresh
+                }
+            },
+            effective_arguments: confirmation_args.clone(),
+        });
+        crate::agent::set_computer_use_approval_context(
+            &tool_name,
+            &mut tool_args,
+            approval_context,
+        );
 
         let signature = tool_call_signature(&tool_name, &tool_args);
         let dedup_exempt =
             ctx.dedup_exempt_tools.iter().any(|e| e == &tool_name) || reentrant_agent_tool;
         if dedup_enabled && !dedup_exempt && !seen_tool_signatures.insert(signature) {
-            let duplicate =
-                record_duplicate_tool_call(ctx, &tool_name, &tool_args, iteration).await;
+            let duplicate = record_rejected_tool_call(
+                ctx,
+                &tool_name,
+                &tool_args,
+                iteration,
+                format!(
+                    "Skipped duplicate tool call '{tool_name}' with identical arguments in this turn."
+                ),
+                true,
+            )
+            .await;
             abandon_prepared_context(ctx, &hook_context, &tool_name).await;
             ordered_results[idx] = Some((tool_name.clone(), call.tool_call_id.clone(), duplicate));
             continue;
@@ -417,6 +566,10 @@ pub(crate) async fn prepare_tool_calls(
             arguments: tool_args,
             tool_call_id: Some(call_id),
         });
+        if call_fresh_confirmation_guard.is_some() {
+            debug_assert!(fresh_confirmation_guard.is_none());
+            fresh_confirmation_guard = call_fresh_confirmation_guard;
+        }
     }
 
     Ok(PreparedToolCalls {
@@ -424,6 +577,7 @@ pub(crate) async fn prepare_tool_calls(
         executable_indices,
         executable_calls,
         stream_calls: executable_stream_calls,
+        fresh_confirmation_guard,
     })
 }
 
@@ -556,6 +710,7 @@ mod tests {
             vec![ToolExecutionOutcome {
                 output: "ok".to_string(),
                 attachments: Vec::new(),
+                audit_output: None,
                 output_data: None,
                 success: true,
                 error_reason: None,
@@ -811,6 +966,7 @@ mod tests {
             vec![ToolExecutionOutcome {
                 output: "ok".to_string(),
                 attachments: Vec::new(),
+                audit_output: None,
                 output_data: None,
                 success: true,
                 error_reason: None,

@@ -61,6 +61,8 @@ pub enum BuiltinToolCompilation {
     External,
     /// An existing SaaS or coding-CLI compilation group.
     OptIn(OptInTool),
+    /// Native desktop drivers compiled by `computer-use`.
+    ComputerUse,
 }
 
 impl BuiltinToolCompilation {
@@ -69,6 +71,7 @@ impl BuiltinToolCompilation {
         match self {
             Self::Always => true,
             Self::External => cfg!(feature = "tools-external"),
+            Self::ComputerUse => cfg!(feature = "computer-use"),
             Self::OptIn(tool) => {
                 // A consumer can enable config features without compiling the concrete owner.
                 let owner_compiled = match tool {
@@ -471,6 +474,11 @@ pub const BUILTIN_TOOLS: &[BuiltinToolSpec] = &[
         name: "browser",
         tier: ToolTier::Optional,
         compilation: BuiltinToolCompilation::External,
+    },
+    BuiltinToolSpec {
+        name: "computer_use",
+        tier: ToolTier::Optional,
+        compilation: BuiltinToolCompilation::ComputerUse,
     },
     BuiltinToolSpec {
         name: "browser_delegate",

@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn config_defaults_are_sensible() {
         let cfg = default_test_config();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert_eq!(cfg.cli_binary, "claude");
         assert!(cfg.chrome_profile_dir.is_empty());
         assert!(cfg.allowed_domains.is_empty());

@@ -309,6 +309,7 @@ mod tests {
         ToolExecutionOutcome {
             output: "out".into(),
             attachments: Vec::new(),
+            audit_output: None,
             success: true,
             error_reason: None,
             duration: Duration::ZERO,
@@ -404,6 +405,7 @@ mod tests {
         let outcome = ToolExecutionOutcome {
             output: "api_key = \"sk-live-abcd1234efgh5678\"".into(),
             attachments: Vec::new(),
+            audit_output: None,
             success: true,
             error_reason: None,
             duration: Duration::ZERO,

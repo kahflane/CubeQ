@@ -113,6 +113,7 @@ schema-export = ["dep:schemars", "cubeq-config/schema-export", "cubeq-sop-graph/
 
 
 browser-native = []
+computer-use = ["cubeq-tools/computer-use"]
 plugins-wasm = ["dep:cubeq-plugins", "cubeq-plugins/plugins-wasmtime"]
 # Adds the Cranelift JIT to the plugin host so a `.wasm` component can be
 # compiled on the host instead of requiring a precompiled `.cwasm`. Production

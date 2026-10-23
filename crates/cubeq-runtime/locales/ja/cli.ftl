@@ -51,7 +51,7 @@ cli-config-schema-about = 完全な設定JSONスキーマをstdoutにダンプ
 cli-config-list-about = すべての設定プロパティを現在の値とともにリスト表示
 cli-config-get-about = 設定プロパティ値を取得
 cli-config-set-about = 設定プロパティを設定 (シークレットフィールドはマスク入力で自動プロンプト)
-cli-config-init-about = 未設定セクションをデフォルト (enabled=false) で初期化
+cli-config-init-about = 未設定セクションをデフォルトで初期化
 cli-config-migrate-about = config.tomlを現在のスキーマバージョンにディスク上で移行 (コメント保持)
 cli-service-install-about = 自動開始と再開のためのデーモンサービスユニットをインストール
 cli-service-start-about = デーモンサービスを開始
@@ -535,7 +535,6 @@ cli-quickstart-needs-tty = クイックスタートは対話式で、stdin と s
 cli-quickstart-terminal-size-unknown = クイックスタートはターミナルのサイズを判定できなかったため、チェックリストが収まるか確認できません。サイズを報告するターミナルから実行するか、ヘッドレス設定には `cubeq config set <path> <value>` を使用してください。
 cli-quickstart-terminal-too-narrow = クイックスタートには幅が {$min_width} 列以上のターミナルが必要です。現在の幅は {$width} 列です。ターミナルを広げて再試行してください。
 cli-quickstart-terminal-too-short = クイックスタートには高さが {$min_height} 行以上のターミナルが必要です。現在の高さは {$height} 行です。ターミナルを高くして再試行してください。
-cli-quickstart-terminal-resized = クイックスタートのチェックリストを開いている間に、ターミナルが {$initial_width}x{$initial_height} から {$current_width}x{$current_height} に変更されました。続行するにはチェックリストを開き直してください。
 cli-quickstart-empty-checklist = クイックスタートは空のチェックリストを開けません。
 cli-quickstart-cancelled = クイックスタートをキャンセルしました。設定は書き込まれていません。
 cli-quickstart-incomplete = {"  "}すべてのセレクターがまだ入力されていません。

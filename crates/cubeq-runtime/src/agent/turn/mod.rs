@@ -87,7 +87,7 @@ use crate::agent::execution_tree_budget::{ExecutionTreeBudget, ExecutionTreeRese
 use crate::agent::system_prompt::{NATIVE_TOOLS_TASK_FRAMING, NO_TOOLS_TASK_FRAMING};
 use crate::agent::tool_execution::{
     ToolDispatchContext, execute_tools_parallel, execute_tools_sequential,
-    should_execute_tools_in_parallel,
+    should_execute_tools_in_parallel_with_registry,
 };
 use crate::live_config_authority::AgentExecutionAdmission;
 use crate::security::ingress::{IngressPolicy, ingress_policy, steering_policy};
@@ -3269,6 +3269,7 @@ async fn run_tool_call_loop_impl<'a>(
             executable_indices,
             executable_calls,
             stream_calls,
+            fresh_confirmation_guard,
         } = prepare_tool_calls(
             &ctx,
             tools_registry,
@@ -3281,11 +3282,16 @@ async fn run_tool_call_loop_impl<'a>(
         )
         .await?;
 
-        // Hooks and preparation may rewrite tool names or arguments. Decide
-        // parallel eligibility from the final executable calls so policy is
-        // applied to what the runtime will actually dispatch.
-        let allow_parallel_execution =
-            parallel_tools && should_execute_tools_in_parallel(&executable_calls, approval);
+        // Decide from the post-hook prepared calls so an action-sensitive
+        // fresh-confirmation requirement cannot be rewritten into a parallel
+        // dispatch after this check.
+        let allow_parallel_execution = parallel_tools
+            && should_execute_tools_in_parallel_with_registry(
+                &executable_calls,
+                approval,
+                tools_registry,
+                activated_tools,
+            );
 
         let live_sop_queue = crate::sop::executor::new_live_action_queue();
         let execution =
@@ -3336,6 +3342,10 @@ async fn run_tool_call_loop_impl<'a>(
             Some(budget) => ExecutionTreeBudget::scope(budget, Box::pin(execution)).await,
             None => execution.await,
         };
+        // Release only after the approved call future has completed or been
+        // cancelled; another Fresh prompt may then begin from current state.
+        let fresh_execution_was_in_flight = fresh_confirmation_guard.is_some();
+        drop(fresh_confirmation_guard);
         let executed_slots = match execution_result {
             Ok(slots) => slots,
             Err(e) if is_tool_loop_cancelled(&e) => {
@@ -3358,6 +3368,11 @@ async fn run_tool_call_loop_impl<'a>(
         };
 
         let cancelled_mid_batch = executed_slots.iter().any(Option::is_none);
+        let interrupted_result_key = if fresh_execution_was_in_flight {
+            "turn-fresh-tool-interrupted-outcome-unknown"
+        } else {
+            "turn-tool-interrupted-before-result"
+        };
 
         let mut executed_completed_indices: Vec<usize> = Vec::new();
         let mut executed_completed_calls = Vec::new();
@@ -3406,10 +3421,9 @@ async fn run_tool_call_loop_impl<'a>(
                         call.name.clone(),
                         call.tool_call_id.clone(),
                         crate::agent::tool_execution::ToolExecutionOutcome {
-                            output: crate::i18n::get_required_cli_string(
-                                "turn-tool-interrupted-before-result",
-                            ),
+                            output: crate::i18n::get_required_cli_string(interrupted_result_key),
                             attachments: Vec::new(),
+                            audit_output: None,
                             success: false,
                             error_reason: None,
                             duration: std::time::Duration::ZERO,
@@ -3432,10 +3446,9 @@ async fn run_tool_call_loop_impl<'a>(
                     }
                     let call_id = events::resolve_tool_call_id(call);
                     let interrupted = crate::agent::tool_execution::ToolExecutionOutcome {
-                        output: crate::i18n::get_required_cli_string(
-                            "turn-tool-interrupted-before-result",
-                        ),
+                        output: crate::i18n::get_required_cli_string(interrupted_result_key),
                         attachments: Vec::new(),
+                        audit_output: None,
                         success: false,
                         error_reason: None,
                         duration: std::time::Duration::ZERO,

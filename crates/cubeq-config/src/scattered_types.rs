@@ -447,7 +447,7 @@ fn default_browser_task_timeout() -> u64 {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "browser_delegate"]
 pub struct BrowserDelegateConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_browser_cli")]
     pub cli_binary: String,
@@ -464,7 +464,7 @@ pub struct BrowserDelegateConfig {
 impl Default for BrowserDelegateConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             cli_binary: default_browser_cli(),
             chrome_profile_dir: String::new(),
             allowed_domains: Vec::new(),

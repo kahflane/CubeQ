@@ -234,8 +234,8 @@ pub struct A2aServerSection {
 #[prefix = "a2a_client"]
 #[serde(default)]
 pub struct A2aClientConfig {
-    /// Master switch for the outbound A2A client. Default `false`: no
-    /// `a2a_*` tools register, no peer connections are attempted.
+    /// Master switch for the outbound A2A client. Default `true`: the
+    /// `a2a_*` tools register, and connect only to configured peers.
     pub enabled: bool,
     /// Per-request timeout (seconds) for JSON-RPC calls to a peer, covering
     /// `message/send` blocking waits. A peer that does not return a
@@ -295,7 +295,7 @@ fn default_a2a_client_max_response_bytes() -> usize {
 impl Default for A2aClientConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             request_timeout_secs: default_a2a_client_request_timeout_secs(),
             card_cache_ttl_secs: default_a2a_client_card_cache_ttl_secs(),
             allow_private_hosts: false,
@@ -639,9 +639,9 @@ public_base_url = "https://agents.example.com"
     }
 
     #[test]
-    fn a2a_client_config_default_is_closed_with_sane_timeouts() {
+    fn a2a_client_config_default_is_on_with_sane_timeouts() {
         let cfg = A2aClientConfig::default();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         // Zero timeout would fire immediately on every call; the defaults
         // must be the documented 120s / 300s, not 0.
         assert_eq!(cfg.request_timeout_secs, 120);

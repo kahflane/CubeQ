@@ -11,11 +11,13 @@ under a security policy, and keeps long-term memory.
 
 - **Providers**: Anthropic, OpenAI, Ollama, OpenRouter and any
   OpenAI-compatible endpoint, with fallback and routing.
-- **Channels**: Telegram, Discord, email, webhooks, the filesystem and ACP by
-  default. More channels (Slack, Matrix, WhatsApp and others) are behind
-  feature flags.
-- **Tools**: shell, files, web fetch and search, HTTP, git, browser and more,
-  all gated by an autonomy level and risk profiles.
+- **Channels**: Telegram, Discord, Slack, Matrix, WhatsApp, email, webhooks,
+  ACP and many more. Each one is turned on in config.
+- **Tools**: shell, files, web fetch and search, HTTP, git, browser, desktop
+  control, coding CLIs and more, all gated by an autonomy level and risk
+  profiles. Tools that need no API key are on by default. Tools that need a
+  key (Composio, Microsoft 365, Notion, Jira, LinkedIn, image generation,
+  Google Workspace) stay off until you configure them.
 - **Security**: supervised autonomy by default, workspace boundaries, command
   policy, OS sandboxes (Landlock, Bubblewrap, Seatbelt), approvals and an
   emergency stop.
@@ -25,14 +27,16 @@ under a security policy, and keeps long-term memory.
 - **SOPs and cron**: event-triggered standard operating procedures with
   approval gates, plus scheduled tasks.
 - **Plugins and skills**: WASM plugins and file-based skills.
-- **Hardware**: GPIO, I2C, SPI and USB peripherals (behind the `hardware`
-  feature).
+- **Hardware**: GPIO, I2C, SPI and USB peripherals.
+- **Computer use**: native desktop control on macOS, Linux (X11) and Windows,
+  with a fresh approval for every input action.
 
 ## Requirements
 
 - Rust 1.96 or newer (`rustup update stable`)
 - A C toolchain for some dependencies (Xcode Command Line Tools on macOS,
   `build-essential` on Debian/Ubuntu)
+- On Linux, `libudev-dev`, `libasound2-dev` and `pkg-config`
 
 ## Build
 
@@ -51,11 +55,12 @@ cargo install --path . --locked
 
 ### Feature flags
 
-The default build includes the agent runtime, the gateway, ACP, Prometheus
-metrics and the default channels. Add more with `--features`:
+The default build includes every feature: all channels and tools, the
+gateway, WASM plugins, hardware, Postgres memory, OpenTelemetry and computer
+use. For a smaller binary, turn the defaults off and pick what you need:
 
 ```bash
-cargo build --release --features "plugins-wasm,hardware,memory-postgres"
+cargo build --release --no-default-features --features "agent-runtime,default-channels,gateway"
 ```
 
 `Cargo.toml` lists every feature. The `embedded-web` feature needs a web
@@ -110,6 +115,38 @@ at your own:
 - Skills: set `skills.registry_url` in the config.
 
 Installing from a local path works without a registry.
+
+### Computer use
+
+The `computer_use` tool lets an agent inspect and operate desktop apps. It
+uses each OS's accessibility API first (AX on macOS, AT-SPI on Linux, UI
+Automation on Windows) and falls back to screen coordinates. Wayland input and
+capture are not supported and fail closed.
+
+It is on by default and can reach any desktop app. To narrow it or turn it
+off:
+
+```toml
+[computer_use]
+enabled = true                     # false turns the tool off
+application_access = "allowlist"   # default "desktop" admits any app
+confirmation_mode = "fresh"        # or "session" to follow the risk profile
+allowed_applications = ["com.apple.Safari"]
+```
+
+- `fresh` (the default) asks the operator before every input action and every
+  whole-screen capture. Full autonomy and "Always" cannot skip it.
+- `allowlist` admits only the exact apps listed. Use the `list_apps` action
+  to find their identifiers.
+- Screenshots and UI text go to your model provider. Treat them as untrusted
+  input. Don't use `type_text` for passwords or secrets.
+- This is not a sandbox. An agent that can also run `shell` can reach desktop
+  APIs directly.
+
+On macOS, grant the app that launches `cubeq` (your terminal, for example)
+**Accessibility** and **Screen & System Audio Recording** under System
+Settings → Privacy & Security, then restart CubeQ. Run the `capabilities`
+action to check permissions without sending input.
 
 ## Commands
 

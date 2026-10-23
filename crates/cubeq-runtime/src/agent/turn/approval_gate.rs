@@ -6,6 +6,7 @@ use super::events::StreamDelta;
 use super::redact::scrub_credentials;
 use crate::agent::tool_execution::ToolExecutionOutcome;
 use crate::approval::{ApprovalRequest, ApprovalRequirement, ApprovalResponse};
+use cubeq_api::tool::ConfirmationRequirement;
 use std::time::Duration;
 
 pub(crate) enum ApprovalGateOutcome {
@@ -13,6 +14,104 @@ pub(crate) enum ApprovalGateOutcome {
     Deny(ToolExecutionOutcome),
     Replace(ToolExecutionOutcome),
     Cancelled,
+}
+
+async fn deny_tool_call(
+    ctx: &TurnCtx<'_>,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    iteration: usize,
+    unanswerable: bool,
+) -> ApprovalGateOutcome {
+    // This string is fed back to the MODEL, so it states the outcome and
+    // stops there. It deliberately does not name the settings that would
+    // permit the call: `auto_approve` bypasses operator approval for that
+    // tool and `level = "full"` auto-approves uncovered tools (tools in
+    // `always_ask` still prompt or fail closed). Putting that remedy in
+    // front of the model invites it to argue for expanding its own
+    // privileges, which is a disproportionate response to an approval
+    // channel being unavailable.
+    // Operators get the actionable advice through the WARN record below and
+    // the UI, where changing policy is actually their decision to make.
+    let denied = if unanswerable {
+        format!(
+            "Tool call not executed: '{tool_name}' requires approval and no operator \
+             decision was available, so the runtime denied it by policy. This was not \
+             a user's decision."
+        )
+    } else {
+        // A real operator said no. The three-word form this replaces
+        // carried the fact and none of its meaning, so the model
+        // supplied the meaning itself and did not do it the same way
+        // twice: on one run it reported the decline correctly, on the
+        // next it offered three invented causes, none of them what
+        // happened. The host owns the fact, so the host states what it
+        // means. `Denied by user.` is kept as the opening sentence
+        // because it is the phrase that distinguishes this path from
+        // the runtime-generated denial above, and dropping it would
+        // lose that distinction for every reader that already looks
+        // for it.
+        format!(
+            "Denied by user. The operator was asked to approve \
+             '{tool_name}' and declined, so the call did not run. Tell \
+             the user the request was declined. Do not retry this call \
+             and do not speculate about why it was declined."
+        )
+    };
+    ::cubeq_log::record!(
+        WARN,
+        ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Reject)
+            .with_category(::cubeq_log::EventCategory::Tool)
+            .with_outcome(::cubeq_log::EventOutcome::Failure)
+            .with_attrs(::serde_json::json!({
+                "model": ctx.model,
+                "iteration": iteration + 1,
+                "tool": tool_name,
+                "arguments": scrub_credentials(&tool_args.to_string()),
+                "result": denied,
+                "trace_id": ctx.turn_id,
+                // Operator-facing only. The remedy lives here rather than
+                // in `result`, which is shown to the model: deciding to
+                // relax an approval policy is the operator's call, and
+                // putting the option in front of the model would invite it
+                // to lobby for its own privilege expansion.
+                "denied_by_runtime": unanswerable,
+                "operator_hint": if unanswerable {
+                    if ctx.approval.is_some_and(|mgr| !mgr.is_non_interactive()) {
+                        Some("CLI approval input was unavailable. Run with a controlling \
+                              terminal or readable stdin so an operator can answer. If this \
+                              tool should run unattended, review the agent's risk profile \
+                              deliberately.")
+                    } else {
+                        Some("No operator could be asked. Check that an approval-capable \
+                              channel is connected and that the agent's approval route names \
+                              a registered, reachable approver. If this tool should run \
+                              unattended, review the agent's risk profile deliberately.")
+                    }
+                } else {
+                    None
+                },
+            })),
+        "tool_call_result"
+    );
+    if let Some(tx) = ctx.on_delta {
+        let _ = tx
+            .send(StreamDelta::Status(format!(
+                "\u{274c} {}: {}\n",
+                tool_name, denied
+            )))
+            .await;
+    }
+    ApprovalGateOutcome::Deny(ToolExecutionOutcome {
+        output: denied.clone(),
+        attachments: Vec::new(),
+        audit_output: None,
+        success: false,
+        error_reason: Some(denied),
+        duration: Duration::ZERO,
+        receipt: None,
+        output_data: None,
+    })
 }
 
 /// Run the approval flow for one tool call (upstream loop body, approval
@@ -23,16 +122,23 @@ pub(crate) async fn gate_tool_approval(
     ctx: &TurnCtx<'_>,
     tool_name: &str,
     tool_args: &serde_json::Value,
+    confirmation_requirement: ConfirmationRequirement,
     iteration: usize,
     position: cubeq_api::channel::ApprovalPosition,
 ) -> ApprovalGateOutcome {
-    let mut approval_requirement = ctx
-        .approval
-        .map(|mgr| mgr.approval_requirement(tool_name))
-        .unwrap_or(ApprovalRequirement::NotRequired);
-    if let Some(mgr) = ctx.approval
-        && approval_requirement == ApprovalRequirement::Prompt
-    {
+    let mut approval_requirement = match confirmation_requirement {
+        ConfirmationRequirement::Policy => ctx
+            .approval
+            .map(|mgr| mgr.approval_requirement(tool_name))
+            .unwrap_or(ApprovalRequirement::NotRequired),
+        ConfirmationRequirement::Fresh => ApprovalRequirement::Prompt,
+    };
+    if approval_requirement == ApprovalRequirement::Prompt {
+        let Some(mgr) = ctx.approval else {
+            // No approval manager at all: there is no operator to ask, so this
+            // is a runtime fail-closed denial rather than a user's decision.
+            return deny_tool_call(ctx, tool_name, tool_args, iteration, true).await;
+        };
         let request = ApprovalRequest {
             tool_name: tool_name.to_string(),
             arguments: tool_args.clone(),
@@ -44,7 +150,10 @@ pub(crate) async fn gate_tool_approval(
         // back to auto-deny.
         let (decision, decided_by, unanswerable) = if mgr.is_non_interactive() {
             let attributed = if let Some(ch) = ctx.channel {
-                let arguments_summary = crate::approval::summarize_args(&request.arguments);
+                let arguments_summary = crate::approval::summarize_args_for_confirmation(
+                    &request.arguments,
+                    confirmation_requirement,
+                );
                 let arguments_summary =
                     match (ctx.channel_name, ctx.agent_alias, ctx.parent_agent_alias) {
                         ("delegate", Some(target), Some(caller)) => {
@@ -140,104 +249,23 @@ pub(crate) async fn gate_tool_approval(
             };
             (decision, decided_by, unanswerable)
         } else {
-            match mgr.prompt_cli(&request) {
+            match mgr.prompt_cli_with_confirmation(&request, confirmation_requirement) {
                 Ok(decision) => (decision, None, false),
                 Err(_) => (ApprovalResponse::No, None, true),
             }
         };
 
         let decision_channel = decided_by.unwrap_or_else(|| ctx.channel_name.to_string());
-        mgr.record_decision(tool_name, tool_args, &decision, &decision_channel);
+        mgr.record_decision_with_confirmation(
+            tool_name,
+            tool_args,
+            &decision,
+            &decision_channel,
+            confirmation_requirement,
+        );
 
         if decision == ApprovalResponse::No {
-            // This string is fed back to the MODEL, so it states the outcome and
-            // stops there. It deliberately does not name the settings that would
-            // permit the call: `auto_approve` bypasses operator approval for that
-            // tool and `level = "full"` auto-approves uncovered tools (tools in
-            // `always_ask` still prompt or fail closed). Putting that remedy in
-            // front of the model invites it to argue for expanding its own
-            // privileges, which is a disproportionate response to an approval
-            // channel being unavailable.
-            // Operators get the actionable advice through the WARN record below and
-            // the UI, where changing policy is actually their decision to make.
-            let denied = if unanswerable {
-                format!(
-                    "Tool call not executed: '{tool_name}' requires approval and no operator \
-                     decision was available, so the runtime denied it by policy. This was not \
-                     a user's decision."
-                )
-            } else {
-                // A real operator said no. The three-word form this replaces
-                // carried the fact and none of its meaning, so the model
-                // supplied the meaning itself and did not do it the same way
-                // twice: on one run it reported the decline correctly, on the
-                // next it offered three invented causes, none of them what
-                // happened. The host owns the fact, so the host states what it
-                // means. `Denied by user.` is kept as the opening sentence
-                // because it is the phrase that distinguishes this path from
-                // the runtime-generated denial above, and dropping it would
-                // lose that distinction for every reader that already looks
-                // for it.
-                format!(
-                    "Denied by user. The operator was asked to approve \
-                     '{tool_name}' and declined, so the call did not run. Tell \
-                     the user the request was declined. Do not retry this call \
-                     and do not speculate about why it was declined."
-                )
-            };
-            ::cubeq_log::record!(
-                WARN,
-                ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Reject)
-                    .with_category(::cubeq_log::EventCategory::Tool)
-                    .with_outcome(::cubeq_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({
-                        "model": ctx.model,
-                        "iteration": iteration + 1,
-                        "tool": tool_name,
-                        "arguments": scrub_credentials(&tool_args.to_string()),
-                        "result": denied,
-                        "trace_id": ctx.turn_id,
-                        // Operator-facing only. The remedy lives here rather than
-                        // in `result`, which is shown to the model: deciding to
-                        // relax an approval policy is the operator's call, and
-                        // putting the option in front of the model would invite it
-                        // to lobby for its own privilege expansion.
-                        "denied_by_runtime": unanswerable,
-                        "operator_hint": if unanswerable {
-                            if mgr.is_non_interactive() {
-                                Some("No operator could be asked. Check that an approval-capable \
-                                      channel is connected and that the agent's approval route names \
-                                      a registered, reachable approver. If this tool should run \
-                                      unattended, review the agent's risk profile deliberately.")
-                            } else {
-                                Some("CLI approval input was unavailable. Run with a controlling \
-                                      terminal or readable stdin so an operator can answer. If this \
-                                      tool should run unattended, review the agent's risk profile \
-                                      deliberately.")
-                            }
-                        } else {
-                            None
-                        },
-                    })),
-                "tool_call_result"
-            );
-            if let Some(tx) = ctx.on_delta {
-                let _ = tx
-                    .send(StreamDelta::Status(format!(
-                        "\u{274c} {}: {}\n",
-                        tool_name, denied
-                    )))
-                    .await;
-            }
-            return ApprovalGateOutcome::Deny(ToolExecutionOutcome {
-                output: denied.clone(),
-                attachments: Vec::new(),
-                success: false,
-                error_reason: Some(denied),
-                duration: Duration::ZERO,
-                receipt: None,
-                output_data: None,
-            });
+            return deny_tool_call(ctx, tool_name, tool_args, iteration, unanswerable).await;
         }
 
         if let ApprovalResponse::ReplaceWith(replacement) = &decision {
@@ -268,6 +296,7 @@ pub(crate) async fn gate_tool_approval(
             return ApprovalGateOutcome::Replace(ToolExecutionOutcome {
                 output: crate::approval::sanitize_tool_replacement(replacement),
                 attachments: Vec::new(),
+                audit_output: None,
                 success: true,
                 error_reason: None,
                 duration: Duration::ZERO,
@@ -443,6 +472,7 @@ mod tests {
             &ctx,
             "shell",
             &serde_json::json!({"command": "true"}),
+            cubeq_api::tool::ConfirmationRequirement::Policy,
             0,
             cubeq_api::channel::ApprovalPosition { index: 1, total: 1 },
         )
@@ -554,6 +584,7 @@ mod tests {
             &ctx,
             "shell",
             &serde_json::json!({"command": "ls"}),
+            cubeq_api::tool::ConfirmationRequirement::Policy,
             0,
             cubeq_api::channel::ApprovalPosition { index: 1, total: 1 },
         )
@@ -578,6 +609,7 @@ mod tests {
             &ctx,
             "file_write",
             &serde_json::json!({"path": "x"}),
+            cubeq_api::tool::ConfirmationRequirement::Policy,
             0,
             cubeq_api::channel::ApprovalPosition { index: 1, total: 1 },
         )
@@ -611,6 +643,7 @@ mod tests {
             &ctx,
             "shell",
             &serde_json::json!({"command": "ls"}),
+            cubeq_api::tool::ConfirmationRequirement::Policy,
             0,
             cubeq_api::channel::ApprovalPosition { index: 1, total: 1 },
         )
@@ -639,6 +672,7 @@ mod tests {
             &ctx,
             "file_write",
             &serde_json::json!({"path": "x"}),
+            cubeq_api::tool::ConfirmationRequirement::Policy,
             0,
             cubeq_api::channel::ApprovalPosition { index: 1, total: 1 },
         )
@@ -706,6 +740,7 @@ mod tests {
             &ctx,
             "shell",
             &arguments,
+            cubeq_api::tool::ConfirmationRequirement::Policy,
             0,
             cubeq_api::channel::ApprovalPosition { index: 1, total: 1 },
         );

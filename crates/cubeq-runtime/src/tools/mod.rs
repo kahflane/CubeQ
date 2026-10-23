@@ -71,6 +71,8 @@ pub use cubeq_tools::cloud_patterns::CloudPatternsTool;
 pub use cubeq_tools::codex_cli::CodexCliTool;
 #[cfg(feature = "tool-composio")]
 pub use cubeq_tools::composio::ComposioTool;
+#[cfg(feature = "computer-use")]
+pub use cubeq_tools::computer_use::{ComputerUseConfigResolver, ComputerUseTool};
 pub use cubeq_tools::content_search::ContentSearchTool;
 pub use cubeq_tools::data_management::DataManagementTool;
 pub use cubeq_tools::discord_search::DiscordSearchTool;
@@ -245,6 +247,32 @@ impl Tool for ArcToolRef {
         self.0.param_domains()
     }
 
+    fn confirmation_requirement(
+        &self,
+        args: &serde_json::Value,
+    ) -> ::cubeq_api::tool::ConfirmationRequirement {
+        self.0.confirmation_requirement(args)
+    }
+
+    fn effective_confirmation_arguments(&self, args: &serde_json::Value) -> serde_json::Value {
+        self.0.effective_confirmation_arguments(args)
+    }
+
+    fn output_sensitivity(
+        &self,
+        args: &serde_json::Value,
+    ) -> ::cubeq_api::tool::ToolOutputSensitivity {
+        self.0.output_sensitivity(args)
+    }
+
+    fn audit_output(
+        &self,
+        args: &serde_json::Value,
+        result: &ToolResult,
+    ) -> Option<serde_json::Value> {
+        self.0.audit_output(args, result)
+    }
+
     // Forward `spec()` so inner overrides keep their `Arc`-shared parameter
     // schemas; the trait default would rebuild the spec from
     // `parameters_schema()`, deep-cloning MCP schemas every loop iteration.
@@ -381,6 +409,32 @@ impl Tool for ArcDelegatingTool {
 
     fn param_domains(&self) -> Vec<(&'static str, ::cubeq_api::tool::OptionDomain)> {
         self.inner.param_domains()
+    }
+
+    fn confirmation_requirement(
+        &self,
+        args: &serde_json::Value,
+    ) -> ::cubeq_api::tool::ConfirmationRequirement {
+        self.inner.confirmation_requirement(args)
+    }
+
+    fn effective_confirmation_arguments(&self, args: &serde_json::Value) -> serde_json::Value {
+        self.inner.effective_confirmation_arguments(args)
+    }
+
+    fn output_sensitivity(
+        &self,
+        args: &serde_json::Value,
+    ) -> ::cubeq_api::tool::ToolOutputSensitivity {
+        self.inner.output_sensitivity(args)
+    }
+
+    fn audit_output(
+        &self,
+        args: &serde_json::Value,
+        result: &ToolResult,
+    ) -> Option<serde_json::Value> {
+        self.inner.audit_output(args, result)
     }
 
     // Forward `spec()` so inner overrides keep their `Arc`-shared parameter
@@ -1916,6 +1970,36 @@ fn all_tools_with_runtime_on_thread(
         );
     }
 
+    #[cfg(feature = "computer-use")]
+    if root_config.computer_use.enabled && select_tool!("computer_use") {
+        let config_resolver: ComputerUseConfigResolver = if let Some(live) = &live_config {
+            let live = live.clone();
+            Arc::new(move || live.read().computer_use.clone())
+        } else {
+            let config = Arc::clone(&config);
+            Arc::new(move || config.computer_use.clone())
+        };
+        tool_arcs.push(Arc::new(ComputerUseTool::new_with_resolver(
+            config_resolver,
+            security.clone(),
+        )));
+    }
+
+    #[cfg(not(feature = "computer-use"))]
+    if root_config.computer_use.enabled {
+        ::cubeq_log::record!(
+            WARN,
+            ::cubeq_log::Event::new(module_path!(), ::cubeq_log::Action::Skip)
+                .with_category(::cubeq_log::EventCategory::Tool)
+                .with_outcome(::cubeq_log::EventOutcome::Failure)
+                .with_attrs(::serde_json::json!({
+                    "error_key": "computer_use.feature_not_compiled",
+                    "tool": "computer_use",
+                })),
+            "computer_use: enabled in config but omitted because the binary lacks the computer-use feature"
+        );
+    }
+
     #[cfg(feature = "tools-external")]
     if browser_config.enabled && select_tool!("browser_open") {
         // Add legacy browser_open tool for simple URL opening
@@ -1939,9 +2023,9 @@ fn all_tools_with_runtime_on_thread(
         }
     }
 
-    // Full browser automation (pluggable backend) is a separate opt-in from
-    // `browser_open`: it drives a real Chrome/Chromium session that may
-    // already be logged in, so `[browser] enabled` alone must not grant it.
+    // Full browser automation (pluggable backend) has its own switch,
+    // `[browser] automation_enabled`, separate from `browser_open`: it drives
+    // a real Chrome/Chromium session that may already be logged in.
     #[cfg(feature = "tools-external")]
     if browser_config.automation_enabled && select_tool!("browser") {
         match BrowserTool::new_with_backend(
@@ -2322,7 +2406,7 @@ fn all_tools_with_runtime_on_thread(
         );
     }
 
-    // Data management tool (disabled by default)
+    // Data management tool
     if root_config.data_retention.enabled {
         register_tool!(
             "data_management",
@@ -5233,6 +5317,63 @@ permissions = ["http_client"]
     /// Regression: SOP tools must NOT appear in the tool registry when the
     /// engine handle is not provided (i.e. no `sops_dir` configured).
     /// Proves the production gating path at `all_tools_with_runtime`.
+    #[cfg(feature = "computer-use")]
+    #[test]
+    fn computer_use_registration_requires_config_gate() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy {
+            workspace_dir: tmp.path().to_path_buf(),
+            ..SecurityPolicy::default()
+        });
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(cubeq_memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let mut cfg = test_config(&tmp);
+        cfg.browser.enabled = false;
+
+        let build = |cfg: &Config| {
+            all_tools(
+                Arc::new(cfg.clone()),
+                &security,
+                &cubeq_config::schema::RiskProfileConfig::default(),
+                "test-agent",
+                Arc::clone(&mem),
+                None,
+                None,
+                &cfg.browser,
+                &cfg.http_request,
+                &cfg.web_fetch,
+                tmp.path(),
+                &HashMap::new(),
+                None,
+                cfg,
+                None,
+                false,
+                None,
+            )
+            .expect("tool registry builds")
+            .tools
+        };
+
+        cfg.computer_use.enabled = false;
+        let disabled = build(&cfg);
+        assert!(!disabled.iter().any(|tool| tool.name() == "computer_use"));
+
+        cfg.computer_use.enabled = true;
+        let enabled = build(&cfg);
+        let tool = enabled
+            .iter()
+            .find(|tool| tool.name() == "computer_use")
+            .expect("computer_use registered when both gates are enabled");
+        assert_eq!(
+            tool.confirmation_requirement(&serde_json::json!({"action": "screenshot"})),
+            cubeq_api::tool::ConfirmationRequirement::Fresh
+        );
+    }
+
     #[test]
     fn sop_tools_absent_when_engine_not_provided() {
         let tmp = TempDir::new().unwrap();
@@ -6481,6 +6622,7 @@ permissions = ["http_client"]
 
         let browser = BrowserConfig {
             enabled: false,
+            automation_enabled: false,
             allowed_domains: vec!["example.com".into()],
             session_name: None,
             ..BrowserConfig::default()
@@ -6589,6 +6731,7 @@ permissions = ["http_client"]
 
         let browser = BrowserConfig {
             enabled: true,
+            automation_enabled: false,
             allowed_domains: vec!["example.com".into()],
             session_name: None,
             ..BrowserConfig::default()
@@ -7613,6 +7756,7 @@ permissions = ["http_client"]
         cfg.sop.procedural_memory_enabled = true;
         cfg.browser_delegate.enabled = true;
         cfg.text_browser.enabled = true;
+        cfg.computer_use.enabled = true;
         cfg.web_search.enabled = true;
         cfg.notion.enabled = true;
         cfg.notion.api_key = "inventory-placeholder".into();

@@ -22,8 +22,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Defaults plus the extras the published archives carry.
-  RELEASE_FEATURES: channel-matrix,channel-lark,channel-git,whatsapp-web,plugins-wasm-cranelift,tools-compat
 
 jobs:
   validate:
@@ -76,10 +74,18 @@ jobs:
         with:
           prefix-key: release-${{ matrix.target }}
 
+      # The default build carries every feature: `hardware`/`probe` need
+      # libudev and `voice-wake` needs ALSA on Linux.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libudev-dev libasound2-dev pkg-config
+
       - name: Add swap
         if: matrix.swap
         run: |
-          sudo fallocate -l 8G "$RUNNER_TEMP/swapfile"
+          sudo fallocate -l 12G "$RUNNER_TEMP/swapfile"
           sudo chmod 600 "$RUNNER_TEMP/swapfile"
           sudo mkswap "$RUNNER_TEMP/swapfile"
           sudo swapon "$RUNNER_TEMP/swapfile"
@@ -89,7 +95,6 @@ jobs:
         shell: bash
         run: >-
           cargo build --release --locked
-          --features "$RELEASE_FEATURES"
           --target "${{ matrix.target }}"
           ${{ matrix.jobs && format('--jobs {0}', matrix.jobs) || '' }}
 

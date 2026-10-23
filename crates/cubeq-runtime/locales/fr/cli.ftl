@@ -51,7 +51,7 @@ cli-config-schema-about = Afficher le schéma JSON complet de la configuration s
 cli-config-list-about = Lister toutes les propriétés de configuration avec leurs valeurs actuelles
 cli-config-get-about = Obtenir la valeur d'une propriété de configuration
 cli-config-set-about = Définir une propriété de configuration (les champs secrets demandent automatiquement une entrée masquée)
-cli-config-init-about = Initialiser les sections non configurées avec les valeurs par défaut (enabled=false)
+cli-config-init-about = Initialiser les sections non configurées avec les valeurs par défaut
 cli-config-migrate-about = Migrer config.toml vers la version actuelle du schéma sur le disque (conserve les commentaires)
 cli-service-install-about = Installer l'unité de service daemon pour le démarrage automatique et la redémarrage
 cli-service-start-about = Démarrer le service daemon
@@ -540,7 +540,6 @@ cli-quickstart-needs-tty = Quickstart est interactif et nécessite un terminal s
 cli-quickstart-terminal-size-unknown = Quickstart n'a pas pu déterminer la taille du terminal et ne peut donc pas vérifier que la liste tient à l'écran. Lancez-le depuis un terminal qui indique ses dimensions, ou utilisez `cubeq config set <path> <value>` pour une configuration headless.
 cli-quickstart-terminal-too-narrow = Quickstart nécessite un terminal d’au moins {$min_width} colonnes de large ; le terminal actuel en compte {$width}. Élargissez le terminal et réessayez.
 cli-quickstart-terminal-too-short = Quickstart nécessite un terminal d’au moins {$min_height} lignes de haut ; le terminal actuel en compte {$height}. Agrandissez le terminal et réessayez.
-cli-quickstart-terminal-resized = Le terminal est passé de {$initial_width}x{$initial_height} à {$current_width}x{$current_height} pendant que la liste Quickstart était ouverte. Rouvrez la liste pour continuer.
 cli-quickstart-empty-checklist = Quickstart ne peut pas ouvrir une liste vide.
 cli-quickstart-cancelled = Quickstart annulé. Aucune configuration écrite.
 cli-quickstart-incomplete = {"  "}Tous les sélecteurs ne sont pas encore renseignés.

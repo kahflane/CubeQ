@@ -51,7 +51,7 @@ cli-config-schema-about = Vuelca el esquema JSON de configuración completo en s
 cli-config-list-about = Lista todas las propiedades de configuración con los valores actuales
 cli-config-get-about = Obtiene el valor de una propiedad de configuración
 cli-config-set-about = Establece una propiedad de configuración (los campos secretos solicitan automáticamente entrada enmascarada)
-cli-config-init-about = Inicializa las secciones no configuradas con valores predeterminados (enabled=false)
+cli-config-init-about = Inicializa las secciones no configuradas con valores predeterminados
 cli-config-migrate-about = Migra config.toml a la versión de esquema actual en disco (conserva los comentarios)
 cli-service-install-about = Instala la unidad de servicio del daemon para el inicio automático y el reinicio
 cli-service-start-about = Inicia el servicio del daemon
@@ -537,7 +537,6 @@ cli-quickstart-needs-tty = Quickstart es interactivo y necesita una terminal en 
 cli-quickstart-terminal-size-unknown = Quickstart no pudo determinar el tamaño de la terminal, así que no puede verificar que la lista quepa. Ejecútalo desde una terminal que informe sus dimensiones, o usa `cubeq config set <path> <value>` para configuración sin interfaz.
 cli-quickstart-terminal-too-narrow = Quickstart necesita una terminal de al menos {$min_width} columnas de ancho; la terminal actual tiene {$width} columnas. Amplía la terminal e inténtalo de nuevo.
 cli-quickstart-terminal-too-short = Quickstart necesita una terminal de al menos {$min_height} filas de alto; la terminal actual tiene {$height} filas. Aumenta la altura de la terminal e inténtalo de nuevo.
-cli-quickstart-terminal-resized = La terminal cambió de {$initial_width}x{$initial_height} a {$current_width}x{$current_height} mientras la lista de Quickstart estaba abierta. Vuelve a abrir la lista para continuar.
 cli-quickstart-empty-checklist = Quickstart no puede abrir una lista vacía.
 cli-quickstart-cancelled = Quickstart cancelado. No se escribió ninguna configuración.
 cli-quickstart-incomplete = {"  "}Aún no se han completado todos los selectores.

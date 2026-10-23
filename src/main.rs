@@ -268,44 +268,57 @@ fn fit_quickstart_selector_row(row: &str, budget: usize) -> String {
     fitted
 }
 
+/// The checklist rows and prompt fitted to one terminal geometry.
 #[cfg(feature = "agent-runtime")]
-fn quickstart_selector_resize_error(
-    initial_size: (u16, u16),
-    current_size: (u16, u16),
-) -> anyhow::Error {
-    let (initial_height, initial_width) = initial_size;
-    let (current_height, current_width) = current_size;
-    anyhow::Error::msg(qta(
-        "cli-quickstart-terminal-resized",
-        &[
-            ("initial_width", &initial_width.to_string()),
-            ("initial_height", &initial_height.to_string()),
-            ("current_width", &current_width.to_string()),
-            ("current_height", &current_height.to_string()),
-        ],
-    ))
+#[derive(Debug)]
+struct QuickstartSelectorFrame {
+    labels: Vec<String>,
+    prompt: String,
 }
 
-/// Decide whether an interaction may continue at the size sampled now.
+/// Fit the checklist to `size`, or explain why that terminal cannot show it.
 ///
-/// Returns `Err` both when the terminal changed size and when its size became
-/// unavailable: an unknown size is not evidence that the geometry still
-/// matches, and `Term::size()`'s fabricated `(24, 80)` fallback could even
-/// compare *equal* to the initial sample on an 80x24 terminal that has since
-/// lost its size query. Unknown therefore fails closed, like a resize.
+/// An unknown size is reported like a too-small terminal: it is not evidence
+/// the geometry still fits, and `Term::size()`'s fabricated `(24, 80)`
+/// fallback could hide a terminal that has lost its size query.
 #[cfg(feature = "agent-runtime")]
-fn quickstart_selector_recheck_size(
-    initial_size: (u16, u16),
-    current_size: Option<(u16, u16)>,
-) -> Result<()> {
-    match current_size {
-        Some(current) if current == initial_size => Ok(()),
-        Some(current) => Err(quickstart_selector_resize_error(initial_size, current)),
-        None => Err(anyhow::Error::msg(qta(
-            "cli-quickstart-terminal-size-unknown",
-            &[],
-        ))),
+fn fit_quickstart_selector_frame(
+    labels: &[String],
+    prompt: &str,
+    size: Option<(u16, u16)>,
+) -> std::result::Result<QuickstartSelectorFrame, String> {
+    let Some((height, width)) = size else {
+        return Err(qta("cli-quickstart-terminal-size-unknown", &[]));
+    };
+    let (height, width) = (usize::from(height), usize::from(width));
+    let Some(row_budget) = quickstart_selector_row_budget(width) else {
+        return Err(qta(
+            "cli-quickstart-terminal-too-narrow",
+            &[
+                ("width", &width.to_string()),
+                ("min_width", &QUICKSTART_SELECTOR_MIN_WIDTH.to_string()),
+            ],
+        ));
+    };
+    if !quickstart_selector_fits_height(height, labels.len()) {
+        return Err(qta(
+            "cli-quickstart-terminal-too-short",
+            &[
+                ("height", &height.to_string()),
+                (
+                    "min_height",
+                    &quickstart_selector_min_height(labels.len()).to_string(),
+                ),
+            ],
+        ));
     }
+    Ok(QuickstartSelectorFrame {
+        labels: labels
+            .iter()
+            .map(|label| fit_quickstart_selector_row(label, row_budget))
+            .collect(),
+        prompt: fit_quickstart_selector_row(prompt, row_budget),
+    })
 }
 
 #[cfg(feature = "agent-runtime")]
@@ -611,54 +624,72 @@ enum QuickstartSelectorOutcome {
     Interrupt,
 }
 
-/// Render the fixed-size Quickstart checklist without dialoguer paging.
+/// Render the Quickstart checklist without dialoguer paging.
 ///
-/// The terminal dimensions sampled for fitting are part of this interaction's
-/// contract. They describe the terminal that receives the frame, and every
-/// input event rechecks them before navigation or selection; a resize exits
-/// the selector-owned alternate screen instead of trying to erase a
-/// main-screen frame whose physical rows the terminal may have reflowed. A
-/// resize of the output terminal alone raises no input event, so it is caught
-/// at the next key. Leaving the alternate screen atomically restores
-/// unrelated output.
+/// The frame is fitted to the terminal that receives it, and every input event
+/// re-measures that terminal before navigation or selection. A size change
+/// refits and redraws the whole frame from a cleared alternate screen, so no
+/// row is ever left fitted for a geometry the terminal no longer has. A resize
+/// of the output terminal alone raises no input event, so it is picked up at
+/// the next key. While the terminal is too small, or its size is unknown, the
+/// screen says why and only Esc or Ctrl+C act. Leaving the alternate screen
+/// restores unrelated output.
 #[cfg(feature = "agent-runtime")]
 fn interact_quickstart_selector<T: QuickstartSelectorTerminal>(
     term: &mut T,
     labels: &[String],
     prompt: &str,
-    initial_size: (u16, u16),
 ) -> Result<QuickstartSelectorOutcome> {
     if labels.is_empty() {
         bail!(qta("cli-quickstart-empty-checklist", &[]));
     }
-    let current_size = quickstart_selector_terminal_size(term);
-    quickstart_selector_recheck_size(initial_size, current_size)?;
+    let mut drawn_size = quickstart_selector_terminal_size(term);
+    let mut frame =
+        fit_quickstart_selector_frame(labels, prompt, drawn_size).map_err(anyhow::Error::msg)?;
 
     let mut screen = QuickstartSelectorScreen::enter(term)?;
     let interaction = (|| -> Result<QuickstartSelectorOutcome> {
         let mut selected = 0;
-        let mut frame = quickstart_selector_frame_lines(labels, prompt, selected);
-        render_quickstart_selector(screen.term, &frame)?;
+        let mut too_small: Option<String> = None;
+        render_quickstart_selector(
+            screen.term,
+            &quickstart_selector_frame_lines(&frame.labels, &frame.prompt, selected),
+        )?;
 
         loop {
             let key = screen.term.read_key()?;
             let current_size = quickstart_selector_terminal_size(screen.term);
-            quickstart_selector_recheck_size(initial_size, current_size)?;
+            let resized = current_size != drawn_size;
+            if resized {
+                drawn_size = current_size;
+                match fit_quickstart_selector_frame(labels, prompt, current_size) {
+                    Ok(refitted) => {
+                        frame = refitted;
+                        too_small = None;
+                    }
+                    Err(reason) => too_small = Some(reason),
+                }
+            }
+
+            if let Some(reason) = &too_small {
+                if resized {
+                    redraw_quickstart_selector(screen.term, std::slice::from_ref(reason))?;
+                }
+                match key {
+                    QuickstartSelectorKey::Cancel => {
+                        return Ok(QuickstartSelectorOutcome::Pick(None));
+                    }
+                    QuickstartSelectorKey::Interrupt => {
+                        return Ok(QuickstartSelectorOutcome::Interrupt);
+                    }
+                    _ => continue,
+                }
+            }
 
             match key {
-                QuickstartSelectorKey::Down => {
-                    selected = (selected + 1) % labels.len();
-                    frame = quickstart_selector_frame_lines(labels, prompt, selected);
-                    screen.term.clear_screen()?;
-                    screen.term.move_cursor_to_origin()?;
-                    render_quickstart_selector(screen.term, &frame)?;
-                }
+                QuickstartSelectorKey::Down => selected = (selected + 1) % labels.len(),
                 QuickstartSelectorKey::Up => {
                     selected = selected.checked_sub(1).unwrap_or(labels.len() - 1);
-                    frame = quickstart_selector_frame_lines(labels, prompt, selected);
-                    screen.term.clear_screen()?;
-                    screen.term.move_cursor_to_origin()?;
-                    render_quickstart_selector(screen.term, &frame)?;
                 }
                 QuickstartSelectorKey::Select => {
                     return Ok(QuickstartSelectorOutcome::Pick(Some(selected)));
@@ -669,8 +700,13 @@ fn interact_quickstart_selector<T: QuickstartSelectorTerminal>(
                 QuickstartSelectorKey::Interrupt => {
                     return Ok(QuickstartSelectorOutcome::Interrupt);
                 }
+                QuickstartSelectorKey::Other if !resized => continue,
                 QuickstartSelectorKey::Other => {}
             }
+            redraw_quickstart_selector(
+                screen.term,
+                &quickstart_selector_frame_lines(&frame.labels, &frame.prompt, selected),
+            )?;
         }
     })();
     let cleanup = screen.restore();
@@ -680,6 +716,17 @@ fn interact_quickstart_selector<T: QuickstartSelectorTerminal>(
         (Ok(_), Err(error)) => Err(error.into()),
         (Ok(selection), Ok(())) => Ok(selection),
     }
+}
+
+/// Clear the selector's alternate screen and draw `lines` from its origin.
+#[cfg(feature = "agent-runtime")]
+fn redraw_quickstart_selector<T: QuickstartSelectorTerminal>(
+    term: &mut T,
+    lines: &[String],
+) -> std::io::Result<()> {
+    term.clear_screen()?;
+    term.move_cursor_to_origin()?;
+    render_quickstart_selector(term, lines)
 }
 
 #[cfg(feature = "agent-runtime")]
@@ -2049,52 +2096,14 @@ async fn run_quickstart_cli(
         ));
 
         let mut term = CrosstermQuickstartTerminal::stderr()?;
-        // Fail closed when the terminal API cannot report its dimensions;
-        // fitting against a guessed size would reintroduce row overflow.
-        let Some(terminal_size) = quickstart_selector_terminal_size(&mut term) else {
-            anyhow::bail!("{}", qta("cli-quickstart-terminal-size-unknown", &[]));
-        };
-        let (terminal_height, terminal_width) = terminal_size;
-        let terminal_height = usize::from(terminal_height);
-        let terminal_width = usize::from(terminal_width);
-        let Some(row_budget) = quickstart_selector_row_budget(terminal_width) else {
-            let terminal_width = terminal_width.to_string();
-            let min_width = QUICKSTART_SELECTOR_MIN_WIDTH.to_string();
-            anyhow::bail!(
-                "{}",
-                qta(
-                    "cli-quickstart-terminal-too-narrow",
-                    &[("width", &terminal_width), ("min_width", &min_width)],
-                )
-            );
-        };
-        let labels: Vec<String> = choices
-            .iter()
-            .map(|(_, label)| fit_quickstart_selector_row(label, row_budget))
-            .collect();
-        let min_height = quickstart_selector_min_height(labels.len());
-        if !quickstart_selector_fits_height(terminal_height, labels.len()) {
-            let terminal_height = terminal_height.to_string();
-            let min_height = min_height.to_string();
-            anyhow::bail!(
-                "{}",
-                qta(
-                    "cli-quickstart-terminal-too-short",
-                    &[("height", &terminal_height), ("min_height", &min_height)],
-                )
-            );
-        }
-
-        let prompt = fit_quickstart_selector_row(
-            &t(
-                "cli-quickstart-open-selector-prompt",
-                "Open a selector (Enter), or pick Create. Esc to quit.",
-            ),
-            row_budget,
+        let labels: Vec<String> = choices.iter().map(|(_, label)| label.clone()).collect();
+        let prompt = t(
+            "cli-quickstart-open-selector-prompt",
+            "Open a selector (Enter), or pick Create. Esc to quit.",
         );
-        // Keep this checklist non-searchable and non-paged, and fail closed if
-        // its fitted terminal dimensions change while it is active.
-        let outcome = interact_quickstart_selector(&mut term, &labels, &prompt, terminal_size)?;
+        // Keep this checklist non-searchable and non-paged; it refits itself
+        // to the terminal whenever the terminal's size changes.
+        let outcome = interact_quickstart_selector(&mut term, &labels, &prompt)?;
         // `process::exit` does not run destructors. Restore cooked mode before
         // preserving the selector's historical Ctrl+C exit semantics.
         drop(term);
@@ -7259,7 +7268,7 @@ enum ConfigCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Initialize unconfigured sections with defaults (enabled=false)
+    /// Initialize unconfigured sections with their defaults
     Init {
         /// Section prefix (e.g. channels.matrix), or <section>.<alias> to create a new dynamic-map alias (e.g. risk_profiles.strict). Omit to init all.
         section: Option<String>,
@@ -16116,7 +16125,6 @@ mod tests {
             &mut term,
             &["first".to_string(), "second".to_string()],
             "Choose",
-            (20, 80),
         )
         .expect("repeated PTY navigation should succeed");
         assert_eq!(outcome, QuickstartSelectorOutcome::Pick(None));
@@ -16182,7 +16190,6 @@ mod tests {
             &mut term,
             std::slice::from_ref(&fitted_label),
             &fitted_prompt,
-            output_size,
         )
         .expect("navigation on the output PTY should succeed");
         assert_eq!(outcome, QuickstartSelectorOutcome::Pick(None));
@@ -16208,10 +16215,10 @@ mod tests {
     }
 
     /// A resize of the output terminal alone raises no Crossterm resize event,
-    /// so the recheck on the next key must read the output terminal itself.
+    /// so the next key must re-measure the output terminal itself and refit.
     #[cfg(all(feature = "agent-runtime", unix))]
     #[test]
-    fn quickstart_selector_fails_closed_when_only_the_output_terminal_resizes() {
+    fn quickstart_selector_refits_when_only_the_output_terminal_resizes() {
         let (mut master, slave) = open_pty(20, 40);
         let mut term = pty_quickstart_terminal(
             &master,
@@ -16223,37 +16230,110 @@ mod tests {
                     columns: 30,
                 },
                 PtyStep::Key(QuickstartSelectorKey::Down),
-                PtyStep::Key(QuickstartSelectorKey::Cancel),
+                PtyStep::Key(QuickstartSelectorKey::Select),
             ],
         );
-        let initial_size = quickstart_selector_terminal_size(&mut term)
-            .expect("the output PTY reports its geometry");
-        assert_eq!(initial_size, (20, 40));
+        let label = "a row that fits forty but not thirty";
+        assert!(console::measure_text_width(label) > 27 && label.len() <= 37);
 
-        let error = interact_quickstart_selector(
+        let outcome = interact_quickstart_selector(
             &mut term,
-            &["first".to_string(), "second".to_string()],
+            &[label.to_string(), "second".to_string()],
             "Choose",
-            initial_size,
         )
-        .expect_err("an output-only resize must stop the selector");
+        .expect("a resize must not stop the selector");
         assert_eq!(
-            error.to_string(),
-            quickstart_selector_resize_error((20, 40), (20, 30)).to_string(),
-            "the recheck must report the output terminal's new geometry"
+            outcome,
+            QuickstartSelectorOutcome::Pick(Some(0)),
+            "navigation continues across the resize"
         );
 
         let output = drain_pty_output(&mut master);
         drop(term);
 
+        let frames: Vec<&str> = output.split(PTY_CLEAR_AND_HOME).skip(1).collect();
         assert_eq!(
-            output.matches(PTY_CLEAR_AND_HOME).count(),
-            2,
-            "only the initial frame and the pre-resize redraw may be drawn; output: {output:?}"
+            frames.len(),
+            3,
+            "the initial frame, the pre-resize redraw and one refitted redraw; output: {output:?}"
         );
         assert!(
+            frames[1].contains(label),
+            "the row fits before the resize; output: {output:?}"
+        );
+        let refitted = frames[2]
+            .split(PTY_SHOW_CURSOR_AND_LEAVE_SCREEN)
+            .next()
+            .unwrap_or_default();
+        assert!(
+            !refitted.contains(label),
+            "the row is refitted after the resize; output: {output:?}"
+        );
+        for line in refitted.split("\r\n") {
+            assert!(
+                console::measure_text_width(line) <= 30,
+                "{line:?} exceeds the resized 30-column terminal"
+            );
+        }
+        assert!(
             output.ends_with(PTY_SHOW_CURSOR_AND_LEAVE_SCREEN),
-            "the cursor and main screen must be restored after the resize; output: {output:?}"
+            "the cursor and main screen must be restored; output: {output:?}"
+        );
+    }
+
+    /// Shrinking below the minimum shows why instead of drawing an overflowing
+    /// frame; navigation waits, and Esc still leaves.
+    #[cfg(all(feature = "agent-runtime", unix))]
+    #[test]
+    fn quickstart_selector_waits_while_the_terminal_is_too_small() {
+        let (mut master, slave) = open_pty(20, 40);
+        let mut term = pty_quickstart_terminal(
+            &master,
+            slave,
+            [
+                PtyStep::ResizeOutput {
+                    rows: 20,
+                    columns: 10,
+                },
+                PtyStep::Key(QuickstartSelectorKey::Down),
+                PtyStep::Key(QuickstartSelectorKey::Select),
+                PtyStep::Key(QuickstartSelectorKey::Cancel),
+            ],
+        );
+
+        let outcome = interact_quickstart_selector(
+            &mut term,
+            &["first".to_string(), "second".to_string()],
+            "Choose",
+        )
+        .expect("a too-small terminal must not stop the selector");
+        assert_eq!(
+            outcome,
+            QuickstartSelectorOutcome::Pick(None),
+            "Select is ignored while the terminal is too small; Esc still leaves"
+        );
+
+        let output = drain_pty_output(&mut master);
+        drop(term);
+        let reason = qta(
+            "cli-quickstart-terminal-too-narrow",
+            &[
+                ("width", "10"),
+                ("min_width", &QUICKSTART_SELECTOR_MIN_WIDTH.to_string()),
+            ],
+        );
+        let notice = output
+            .split(PTY_CLEAR_AND_HOME)
+            .last()
+            .unwrap_or_default()
+            .replace("\r\n", "");
+        assert!(
+            notice.contains(&reason),
+            "the screen must say why the checklist is hidden; output: {output:?}"
+        );
+        assert!(
+            !notice.contains("second"),
+            "no checklist row may be drawn at an unsupported width; output: {output:?}"
         );
     }
 
@@ -16590,29 +16670,28 @@ mod tests {
 
     #[cfg(feature = "agent-runtime")]
     #[test]
-    fn quickstart_selector_recheck_rejects_resize_and_unknown_size() {
-        let initial = (24u16, 80u16);
+    fn quickstart_selector_fit_reports_why_a_size_cannot_show_the_checklist() {
+        let labels = ["first".to_string(), "second".to_string()];
 
-        assert!(
-            quickstart_selector_recheck_size(initial, Some(initial)).is_ok(),
-            "an unchanged size must allow the interaction to continue"
-        );
+        let frame = fit_quickstart_selector_frame(&labels, "Choose", Some((24, 80)))
+            .expect("a large terminal fits the checklist");
+        assert_eq!(frame.labels, labels);
+        assert_eq!(frame.prompt, "Choose");
 
-        let resized = quickstart_selector_recheck_size(initial, Some((24, 40)))
-            .expect_err("a changed size must abort the interaction");
-        assert!(
-            resized.to_string().contains("40"),
-            "the resize error should name the new width; got {resized}"
-        );
+        let narrow = fit_quickstart_selector_frame(&labels, "Choose", Some((24, 10)))
+            .expect_err("a too-narrow terminal cannot show the checklist");
+        assert!(narrow.contains("10"), "names the width; got {narrow}");
 
-        // The important half: unknown is not evidence the geometry still
-        // matches. Without the checked query this branch would compare the
-        // fabricated (24, 80) against the initial sample, find them equal, and
-        // keep redrawing rows fitted for a terminal it can no longer see.
-        let unknown = quickstart_selector_recheck_size(initial, None)
-            .expect_err("an unavailable size must abort the interaction");
+        let short = fit_quickstart_selector_frame(&labels, "Choose", Some((3, 80)))
+            .expect_err("a too-short terminal cannot show the checklist");
+        assert!(short.contains('3'), "names the height; got {short}");
+
+        // Unknown is not evidence the geometry fits. Without the checked
+        // query a fabricated (24, 80) would be fitted against instead.
+        let unknown = fit_quickstart_selector_frame(&labels, "Choose", None)
+            .expect_err("an unavailable size cannot show the checklist");
         assert_eq!(
-            unknown.to_string(),
+            unknown,
             qta("cli-quickstart-terminal-size-unknown", &[]),
             "unknown size must surface the localized size-unknown error"
         );
@@ -16629,7 +16708,6 @@ mod tests {
             &mut term,
             &["first".to_string(), "second".to_string()],
             "Choose",
-            (20, 80),
         )
         .expect("cleanup failure must not replace Ctrl+C interrupt semantics");
 
@@ -16682,9 +16760,8 @@ mod tests {
             [Err(std::io::Error::other("injected read failure"))],
         );
 
-        let error =
-            interact_quickstart_selector(&mut term, &["first".to_string()], "Choose", (20, 80))
-                .expect_err("injected read failure should surface");
+        let error = interact_quickstart_selector(&mut term, &["first".to_string()], "Choose")
+            .expect_err("injected read failure should surface");
         assert!(error.to_string().contains("injected read failure"));
         assert!(term.actions.contains(&"show_cursor"));
         assert!(term.actions.contains(&"leave_alternate_screen"));

@@ -51,7 +51,7 @@ cli-config-schema-about = 将完整的配置 JSON Schema 输出到 stdout
 cli-config-list-about = 列出所有配置属性及其当前值
 cli-config-get-about = 获取配置属性值
 cli-config-set-about = 设置配置属性（密钥字段会自动提示进行掩码输入）
-cli-config-init-about = 使用默认值初始化未配置的部分（enabled=false）
+cli-config-init-about = 使用默认值初始化未配置的部分
 cli-config-migrate-about = 将磁盘上的 config.toml 迁移到当前架构版本（保留注释）
 cli-service-install-about = 安装守护进程服务单元以实现自动启动和重启
 cli-service-start-about = 启动守护进程服务
@@ -536,7 +536,6 @@ cli-quickstart-needs-tty = Quickstart 是交互式流程，需要 stdin 和 stde
 cli-quickstart-terminal-size-unknown = Quickstart 无法确定终端尺寸，因此无法验证清单能否完整显示。请在会报告尺寸的终端中运行，或使用 `cubeq config set <path> <value>` 进行无头配置。
 cli-quickstart-terminal-too-narrow = Quickstart 需要终端宽度至少为 {$min_width} 列；当前终端宽度为 {$width} 列。请加宽终端后重试。
 cli-quickstart-terminal-too-short = Quickstart 需要终端高度至少为 {$min_height} 行；当前终端高度为 {$height} 行。请增高终端后重试。
-cli-quickstart-terminal-resized = Quickstart 清单打开期间，终端从 {$initial_width}x{$initial_height} 变为 {$current_width}x{$current_height}。请重新打开清单以继续。
 cli-quickstart-empty-checklist = Quickstart 无法打开空清单。
 cli-quickstart-cancelled = 已取消 quickstart。未写入配置。
 cli-quickstart-incomplete = {"  "}尚未填写所有选择器。
